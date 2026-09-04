@@ -1,0 +1,2 @@
+"""CalorieK automated tests."""
+
