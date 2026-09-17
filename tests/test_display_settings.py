@@ -13,6 +13,7 @@ from unittest.mock import patch
 from app.application import ApplicationContext
 from app.energy_units import kcal_to_kj
 from app.ui.context import ProfileDraft, RecipeDraft, RecipeItemDTO, SettingsDraft
+from app.version import SCHEMA_VERSION
 from tests.test_energy_migration import create_legacy_database
 
 
@@ -95,7 +96,7 @@ class DisplaySettingsTests(unittest.TestCase):
         directory = self.root / "legacy"
         create_legacy_database(directory / "caloriek.sqlite3")
         upgraded = ApplicationContext(directory)
-        self.assertEqual(upgraded.database.get_schema_version(), 2)
+        self.assertEqual(upgraded.database.get_schema_version(), SCHEMA_VERSION)
         self.assertEqual(upgraded.get_settings().energy_display_unit, "kj")
         self.assertIsNone(upgraded.database.get_setting("energy_display_unit"))
 

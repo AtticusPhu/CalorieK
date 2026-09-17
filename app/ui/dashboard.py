@@ -25,6 +25,7 @@ from app.energy_units import EnergyUnit, energy_unit_label, format_energy, norma
 from .context import DashboardDTO, UIContext
 from .exercise_dialog import ExerciseDialog
 from .food_dialog import FoodDialog
+from .nutrition import DailyNutritionCard
 from .weight_dialog import WeightDialog
 
 
@@ -147,6 +148,8 @@ class DashboardPage(QWidget):
         body_layout.setContentsMargins(0, 0, 0, 12)
         body_layout.setSpacing(16)
         body_layout.addLayout(metrics)
+        self.nutrition_card = DailyNutritionCard(context)
+        body_layout.addWidget(self.nutrition_card)
         body_layout.addWidget(candle_card)
         body_layout.addWidget(treemap_card)
 
@@ -205,6 +208,7 @@ class DashboardPage(QWidget):
 
         self._apply_display_unit(display_unit)
         self._render(dashboard)
+        self.nutrition_card.refresh(dashboard.nutrition)
         self.candlestick_chart.set_color_mode(settings.candle_color_mode)
         self.treemap.set_color_mode(settings.treemap_color_mode)
         self._loaded = True

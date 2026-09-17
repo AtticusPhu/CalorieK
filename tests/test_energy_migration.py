@@ -9,6 +9,7 @@ from pathlib import Path
 from app.db.database import Database
 from app.db.migrations import schema_sql_for_version
 from app.energy_units import kcal_to_kj
+from app.version import SCHEMA_VERSION
 
 
 def create_legacy_database(path: Path, *, schema_sql: str | None = None) -> None:
@@ -113,7 +114,7 @@ class EnergyMigrationTests(unittest.TestCase):
             }
         self.db.initialize(seed_foods=False)
 
-        self.assertEqual(self.db.get_schema_version(), 2)
+        self.assertEqual(self.db.get_schema_version(), SCHEMA_VERSION)
         self.assertIsNone(self.db.get_setting("kcal_per_kg"))
         self.assertEqual(float(self.db.get_setting("kj_per_kg")), kcal_to_kj(7700.123456789))
         self.assertEqual(self.db.get_dirty_from_date(), "2026-08-19")
@@ -235,7 +236,7 @@ class EnergyMigrationTests(unittest.TestCase):
 
     def test_newer_schema_is_rejected_without_journal_or_data_changes(self) -> None:
         with self.db.transaction() as connection:
-            connection.execute("UPDATE schema_version SET version = 3")
+            connection.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION + 1,))
         before = self.path.read_bytes()
         with self.assertRaisesRegex(RuntimeError, "newer than supported"):
             self.db.initialize(seed_foods=False)

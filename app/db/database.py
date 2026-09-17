@@ -13,7 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from app.db.migrations import execute_schema, migrate_v1_to_v2, schema_sql_for_version, validate_schema
+from app.db.migrations import execute_schema, migrate_v1_to_v2, migrate_v2_to_v3, schema_sql_for_version, validate_schema
 from app.db.migrations.snapshot import create_pre_migration_snapshot
 from app.version import SCHEMA_VERSION
 
@@ -78,6 +78,8 @@ class Database:
         self.path = Path(path).expanduser().resolve()
         self.timeout = timeout
         self.last_migration_snapshot: Path | None = None
+        self.last_migration_from_version: int | None = None
+        self.initial_schema_version: int | None = None
 
     def connect(self) -> sqlite3.Connection:
         """Open a configured connection.
@@ -148,9 +150,11 @@ class Database:
         return current
 
     def initialize(self, *, seed_foods: bool = True) -> None:
-        """Create/migrate atomically; keep a raw v1 snapshot before conversion."""
+        """Create/migrate atomically; retain original data before any upgrade."""
 
         self.last_migration_snapshot = None
+        self.last_migration_from_version = None
+        self.initial_schema_version = None
         with self.connection() as connection:
             current = self._initialization_version(connection)
             if current:
@@ -162,22 +166,36 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 # Re-read under the writer lock: another process may have finished
-                # its upgrade since preflight. Never convert a v2 database twice.
+                # its upgrade since preflight. Never apply an upgrade twice.
                 current = self._initialization_version(connection)
+                original_version = current
+                self.initial_schema_version = current
                 timestamp = now_iso()
                 if current == 0:
                     execute_schema(connection, schema_sql_for_version(LATEST_SCHEMA_VERSION))
-                elif current == 1:
-                    validate_schema(connection, 1)
+                elif current in (1, 2):
+                    validate_schema(connection, current)
                     try:
-                        self.last_migration_snapshot = create_pre_migration_snapshot(
-                            self.path, timeout=self.timeout
-                        )
+                        if current == 1:
+                            self.last_migration_snapshot = create_pre_migration_snapshot(
+                                self.path, timeout=self.timeout
+                            )
+                        else:
+                            self.last_migration_snapshot = create_pre_migration_snapshot(
+                                self.path, timeout=self.timeout, from_version=2, to_version=3,
+                            )
                     except Exception as exc:
                         raise RuntimeError(
                             f"pre-migration safety snapshot failed; migration was not started: {exc}"
                         ) from exc
-                    migrate_v1_to_v2(connection, timestamp)
+                    self.last_migration_from_version = current
+                    if current == 1:
+                        migrate_v1_to_v2(connection, timestamp)
+                        connection.execute(
+                            "INSERT INTO schema_version(version, applied_at) VALUES (2, ?)",
+                            (timestamp,),
+                        )
+                    migrate_v2_to_v3(connection)
                 elif current == LATEST_SCHEMA_VERSION:
                     validate_schema(connection, current)
                 else:
@@ -186,12 +204,15 @@ class Database:
                     "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
                     (LATEST_SCHEMA_VERSION, timestamp),
                 )
-                connection.execute(
-                    "INSERT OR IGNORE INTO recalculation_state(id, dirty_from_date, updated_at) "
-                    "VALUES (1, NULL, ?)",
-                    (timestamp,),
-                )
-                if seed_foods:
+                if original_version in (0, 1):
+                    connection.execute(
+                        "INSERT OR IGNORE INTO recalculation_state(id, dirty_from_date, updated_at) "
+                        "VALUES (1, NULL, ?)",
+                        (timestamp,),
+                    )
+                # A v0.0.1 upgrade is metadata-only, even when initialize uses
+                # its default arguments. Seeding can insert rows/advance IDs.
+                if seed_foods and original_version in (0, 1):
                     from app.db.seed_foods import seed_builtin_foods
 
                     seed_builtin_foods(connection)
@@ -203,13 +224,13 @@ class Database:
                     if self.last_migration_snapshot is not None:
                         raise RuntimeError(
                             f"database migration failed: {exc}; rollback also failed: {rollback_error}; "
-                            f"recover from original schema-v1 safety snapshot: {self.last_migration_snapshot}"
+                            f"recover from original schema-v{self.last_migration_from_version} safety snapshot: {self.last_migration_snapshot}"
                         ) from exc
                     raise
                 if self.last_migration_snapshot is not None and isinstance(exc, Exception):
                     raise RuntimeError(
                         f"database migration failed and was rolled back: {exc}; "
-                        f"original schema-v1 safety snapshot: {self.last_migration_snapshot}"
+                        f"original schema-v{self.last_migration_from_version} safety snapshot: {self.last_migration_snapshot}"
                     ) from exc
                 raise
 

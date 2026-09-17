@@ -12,6 +12,7 @@ from unittest.mock import patch
 from app.db.database import Database
 from app.db.migrations import migrate_v1_to_v2
 from app.db.migrations.snapshot import create_pre_migration_snapshot
+from app.version import SCHEMA_VERSION
 from tests.test_energy_migration import create_legacy_database
 
 
@@ -56,7 +57,7 @@ class MigrationSnapshotTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT kcal FROM foods WHERE id=1").fetchone()[0], 123.456789123)
         for suffix in ("-wal", "-shm", "-journal"):
             self.assertFalse(Path(f"{snapshot}{suffix}").exists())
-        self.assertEqual(self.db.get_schema_version(), 2)
+        self.assertEqual(self.db.get_schema_version(), SCHEMA_VERSION)
         with self.db.connection() as connection:
             self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
@@ -110,7 +111,7 @@ class MigrationSnapshotTests(unittest.TestCase):
         self.db.initialize(seed_foods=False)
         self.assertEqual(len(self._snapshots()), 2)
         self.assertEqual(self._dump(snapshot), original)
-        self.assertEqual(self.db.get_schema_version(), 2)
+        self.assertEqual(self.db.get_schema_version(), SCHEMA_VERSION)
 
     def test_failed_snapshot_publication_stops_before_migration(self) -> None:
         original = self._dump(self.path)
@@ -160,7 +161,7 @@ class MigrationSnapshotTests(unittest.TestCase):
         self.assertEqual(self._dump(self.path), original)
         self.assertEqual(self._snapshots(), [])
 
-    def test_reinitializing_v2_does_not_make_or_modify_a_snapshot(self) -> None:
+    def test_reinitializing_current_schema_does_not_make_or_modify_a_snapshot(self) -> None:
         self.db.initialize(seed_foods=False)
         snapshots = self._snapshots()
         saved_bytes = snapshots[0].read_bytes()
@@ -170,10 +171,10 @@ class MigrationSnapshotTests(unittest.TestCase):
         self.assertEqual(self._snapshots(), snapshots)
         self.assertEqual(snapshots[0].read_bytes(), saved_bytes)
 
-    def test_fresh_database_is_v2_without_a_legacy_snapshot(self) -> None:
+    def test_fresh_database_is_current_schema_without_a_legacy_snapshot(self) -> None:
         fresh = Database(self.root / "fresh" / "caloriek.sqlite3")
         fresh.initialize()
-        self.assertEqual(fresh.get_schema_version(), 2)
+        self.assertEqual(fresh.get_schema_version(), SCHEMA_VERSION)
         self.assertIsNone(fresh.last_migration_snapshot)
         self.assertFalse((fresh.path.parent / "backups").exists())
         with fresh.connection() as connection:

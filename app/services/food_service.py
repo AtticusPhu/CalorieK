@@ -7,6 +7,9 @@ from datetime import date, datetime
 from typing import Any
 
 from app.db.database import Database, normalize_datetime, now_iso, row_to_dict
+from app.nutrition import (
+    FOOD_NUTRIENT_FIELDS, NutrientValues, NutritionContribution, food_contribution, optional_nutrient,
+)
 
 
 MEAL_TYPES = frozenset({"BREAKFAST", "LUNCH", "DINNER", "SNACK", "OTHER"})
@@ -79,6 +82,10 @@ class FoodService:
         is_favorite: bool = False,
         data_source: str = "user",
         source_version: str = "user-v1",
+        protein_g_per_100g: float | None = None,
+        fiber_g_per_100g: float | None = None,
+        fat_g_per_100g: float | None = None,
+        carbs_g_per_100g: float | None = None,
     ) -> int:
         name_value = name.strip()
         category_value = category.strip()
@@ -101,6 +108,7 @@ class FoodService:
             if default_serving is not None
             else basis_value
         )
+        composition = NutrientValues(protein_g_per_100g, fiber_g_per_100g, fat_g_per_100g, carbs_g_per_100g)
         timestamp = now_iso()
         with self.db.transaction() as connection:
             cursor = connection.execute(
@@ -109,8 +117,9 @@ class FoodService:
                     builtin_key, name, category, brand, basis_amount, basis_unit,
                     kj, protein_g, fat_g, carb_g, fiber_g, default_serving,
                     is_builtin, is_favorite, user_modified, data_source,
-                    source_version, created_at, updated_at, active
-                ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, 1)
+                    source_version, created_at, updated_at, active,
+                    protein_g_per_100g, fiber_g_per_100g, fat_g_per_100g, carbs_g_per_100g
+                ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                 """,
                 (
                     name_value,
@@ -125,6 +134,7 @@ class FoodService:
                     source_version,
                     timestamp,
                     timestamp,
+                    *composition.as_tuple(),
                 ),
             )
             food_id = int(cursor.lastrowid)
@@ -217,6 +227,7 @@ class FoodService:
             "data_source",
             "source_version",
         }
+        allowed.update(FOOD_NUTRIENT_FIELDS)
         unknown = set(changes) - allowed
         if unknown:
             raise ValueError(f"unsupported food fields: {sorted(unknown)}")
@@ -226,6 +237,9 @@ class FoodService:
         if current is None:
             raise LookupError(f"food {food_id} does not exist")
         normalized: dict[str, Any] = dict(changes)
+        for name in FOOD_NUTRIENT_FIELDS:
+            if name in normalized:
+                normalized[name] = optional_nutrient(normalized[name])
         for field in ("name", "category"):
             if field in normalized:
                 normalized[field] = str(normalized[field]).strip()
@@ -479,6 +493,7 @@ class FoodService:
             base_amount = amount_value
 
         nutrients = self._nutrition_for_base_amount(food, base_amount)
+        composition = food_contribution(food, base_amount)
         occurred_value, local_date = normalize_datetime(occurred_at)
         timestamp = now_iso()
         meal_value = normalize_meal_type(meal_type)
@@ -489,8 +504,9 @@ class FoodService:
                     occurred_at, local_date, source_type, source_id, meal_type,
                     name_snapshot, amount, unit, kj_snapshot,
                     protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
-                    note, created_at, updated_at, active
-                ) VALUES (?, ?, 'FOOD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    note, created_at, updated_at, active,
+                    protein_g, fiber_g, fat_g, carbs_g, nutrition_complete
+                ) VALUES (?, ?, 'FOOD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """,
                 (
                     occurred_value,
@@ -508,6 +524,7 @@ class FoodService:
                     note,
                     timestamp,
                     timestamp,
+                    *composition.snapshot_values(),
                 ),
             )
             self.db.mark_dirty(local_date, connection=connection)
@@ -524,10 +541,10 @@ class FoodService:
         amount: float,
         unit: str,
         kj: float,
-        protein_g: float = 0,
-        fat_g: float = 0,
-        carb_g: float = 0,
-        fiber_g: float = 0,
+        protein_g: float | None = None,
+        fat_g: float | None = None,
+        carb_g: float | None = None,
+        fiber_g: float | None = None,
         occurred_at: datetime | date | str | None = None,
         meal_type: str = "OTHER",
         note: str | None = None,
@@ -538,13 +555,17 @@ class FoodService:
         values = [
             _finite_number(value, label)
             for value, label in zip(
-                (kj, protein_g, fat_g, carb_g, fiber_g),
+                (kj, protein_g or 0, fat_g or 0, carb_g or 0, fiber_g or 0),
                 ("kj", "protein_g", "fat_g", "carb_g", "fiber_g"),
                 strict=True,
             )
         ]
         if not name_value or not unit_value:
             raise ValueError("custom intake name and unit must not be empty")
+        composition_values = NutrientValues(protein_g, fiber_g, fat_g, carb_g)
+        composition = NutritionContribution(
+            composition_values, all(value is not None for value in composition_values.as_tuple()),
+        )
         occurred_value, local_date = normalize_datetime(occurred_at)
         timestamp = now_iso()
         with self.db.transaction() as connection:
@@ -554,8 +575,9 @@ class FoodService:
                     occurred_at, local_date, source_type, source_id, meal_type,
                     name_snapshot, amount, unit, kj_snapshot,
                     protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
-                    note, created_at, updated_at, active
-                ) VALUES (?, ?, 'CUSTOM', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    note, created_at, updated_at, active,
+                    protein_g, fiber_g, fat_g, carbs_g, nutrition_complete
+                ) VALUES (?, ?, 'CUSTOM', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """,
                 (
                     occurred_value,
@@ -568,6 +590,7 @@ class FoodService:
                     note,
                     timestamp,
                     timestamp,
+                    *composition.snapshot_values(),
                 ),
             )
             self.db.mark_dirty(local_date, connection=connection)
@@ -623,6 +646,9 @@ class FoodService:
             positive=True,
         )
         scale = amount_value / float(event["amount"])
+        composition = NutrientValues(
+            event["protein_g"], event["fiber_g"], event["fat_g"], event["carbs_g"],
+        ).scaled(scale)
         if occurred_at is None:
             occurred_value, local_date = event["occurred_at"], event["local_date"]
         else:
@@ -635,7 +661,8 @@ class FoodService:
                 UPDATE intake_events SET occurred_at = ?, local_date = ?, meal_type = ?,
                     amount = ?, kj_snapshot = ?, protein_snapshot = ?,
                     fat_snapshot = ?, carb_snapshot = ?, fiber_snapshot = ?,
-                    note = ?, updated_at = ? WHERE id = ?
+                    note = ?, updated_at = ?,
+                    protein_g = ?, fiber_g = ?, fat_g = ?, carbs_g = ? WHERE id = ?
                 """,
                 (
                     occurred_value,
@@ -649,6 +676,7 @@ class FoodService:
                     float(event["fiber_snapshot"]) * scale,
                     note if update_note or note is not None else event["note"],
                     timestamp,
+                    *composition.as_tuple(),
                     event_id,
                 ),
             )

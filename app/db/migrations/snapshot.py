@@ -1,4 +1,4 @@
-"""Raw, standalone SQLite recovery snapshots taken before live v1 migration."""
+"""Raw, standalone SQLite recovery snapshots taken before live migration."""
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ from time import monotonic
 from .schema import validate_schema
 
 
-def create_pre_migration_snapshot(database_path: Path, *, timeout: float) -> Path:
-    """Copy committed v1 data, including WAL pages, without changing its units.
+def create_pre_migration_snapshot(
+    database_path: Path, *, timeout: float, from_version: int = 1, to_version: int = 2,
+) -> Path:
+    """Copy committed data, including WAL pages, without changing its values.
 
     The caller must hold BEGIN IMMEDIATE on the live database, with no writes
     yet, until migration commits/rolls back. This prevents another writer from
@@ -22,11 +24,13 @@ def create_pre_migration_snapshot(database_path: Path, *, timeout: float) -> Pat
     read-only source: backing up the write-transaction connection can hang.
     """
 
+    if (from_version, to_version) not in ((1, 2), (2, 3)):
+        raise ValueError("unsupported pre-migration snapshot versions")
     directory = database_path.parent / "backups"
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     descriptor, name = tempfile.mkstemp(
-        dir=directory, prefix=f"pre_migration_v1_to_v2_{stamp}_", suffix=".tmp"
+        dir=directory, prefix=f"pre_migration_v{from_version}_to_v{to_version}_{stamp}_", suffix=".tmp"
     )
     os.close(descriptor)
     staged = Path(name)
@@ -46,9 +50,9 @@ def create_pre_migration_snapshot(database_path: Path, *, timeout: float) -> Pat
                 if not mode or str(mode[0]).lower() != "delete":
                     raise RuntimeError("pre-migration snapshot is not a standalone SQLite file")
                 version = target.execute("SELECT MAX(version) FROM schema_version").fetchone()
-                if not version or version[0] != 1:
-                    raise RuntimeError("pre-migration snapshot must remain schema v1")
-                validate_schema(target, 1)
+                if not version or version[0] != from_version:
+                    raise RuntimeError(f"pre-migration snapshot must remain schema v{from_version}")
+                validate_schema(target, from_version)
         # Windows FlushFileBuffers (used by fsync) requires a writable handle.
         with staged.open("rb+") as handle:
             os.fsync(handle.fileno())

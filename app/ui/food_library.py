@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -26,6 +27,8 @@ from PySide6.QtWidgets import (
 
 from .context import FoodDTO, FoodDraft, UIContext
 from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
+from .nutrition import NUTRIENT_CAPTIONS, OptionalNutrientEditor
+from app.nutrition import FOOD_NUTRIENT_FIELDS, format_nutrient
 from app.energy_units import energy_to_display, energy_unit_label, kcal_to_kj
 
 
@@ -49,7 +52,7 @@ class FoodEditorDialog(QDialog):
 
         title = QLabel(self.windowTitle())
         title.setObjectName("pageTitle")
-        helper = QLabel("营养值按统一基准保存；历史饮食事件保留自己的营养快照。")
+        helper = QLabel("能量沿用原有基准；每日营养按每 100g 单独维护。修改食品不会改写历史快照。")
         helper.setObjectName("muted")
         helper.setWordWrap(True)
 
@@ -86,7 +89,7 @@ class FoodEditorDialog(QDialog):
         basis_layout.setSpacing(8)
         basis_layout.addWidget(self.basis_amount_spin, 1)
         basis_layout.addWidget(self.basis_unit_combo)
-        form.addRow("营养基准 *", basis_row)
+        form.addRow("能量 / 旧字段基准 *", basis_row)
 
         self.energy_spin = EnergySpinBox(unit=self._energy_unit)
         self.energy_spin.set_kj_range(0.0, kcal_to_kj(100000.0))
@@ -99,10 +102,32 @@ class FoodEditorDialog(QDialog):
         self.carb_spin = self._number_spin(0.0, 10000.0, 2, food.carb_g if food else 0.0, " g")
         self.fiber_spin = self._number_spin(0.0, 10000.0, 2, food.fiber_g if food else 0.0, " g")
         form.addRow("能量 *", self.energy_spin)
-        form.addRow("蛋白质", self.protein_spin)
-        form.addRow("脂肪", self.fat_spin)
-        form.addRow("碳水", self.carb_spin)
-        form.addRow("膳食纤维", self.fiber_spin)
+        nutrient_note = QLabel(
+            "每日营养（每 100g）：勾选“已知”后填写，明确为零可填 0.00。"
+            "未填写是未知。ml 食品没有密度，暂不能换算质量营养。"
+        )
+        nutrient_note.setWordWrap(True)
+        form.addRow(nutrient_note)
+        self.nutrient_editors: dict[str, OptionalNutrientEditor] = {}
+        for field, caption in zip(FOOD_NUTRIENT_FIELDS, NUTRIENT_CAPTIONS, strict=True):
+            editor = OptionalNutrientEditor(caption, getattr(food, field) if food else None)
+            self.nutrient_editors[field] = editor
+            form.addRow(f"{caption} / 100g", editor)
+
+        # Keep the old editor and its precision semantics available, without
+        # mislabelling its zero-default fields as the new daily nutrition data.
+        legacy = QWidget()
+        legacy_form = QFormLayout(legacy)
+        legacy_form.setContentsMargins(0, 0, 0, 0)
+        for caption, spin in (("旧蛋白质", self.protein_spin), ("旧脂肪", self.fat_spin),
+                              ("旧碳水", self.carb_spin), ("旧膳食纤维", self.fiber_spin)):
+            legacy_form.addRow(caption, spin)
+        legacy.setVisible(False)
+        legacy_toggle = QPushButton("旧版字段（保留兼容，不参与每日营养汇总）")
+        legacy_toggle.setCheckable(True)
+        legacy_toggle.toggled.connect(legacy.setVisible)
+        form.addRow(legacy_toggle)
+        form.addRow(legacy)
 
         self.serving_spin = self._number_spin(
             0.1,
@@ -136,8 +161,14 @@ class FoodEditorDialog(QDialog):
         layout.setSpacing(16)
         layout.addWidget(title)
         layout.addWidget(helper)
-        layout.addLayout(form)
+        form_body = QWidget()
+        form_body.setLayout(form)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form_body)
+        layout.addWidget(scroll, 1)
         layout.addWidget(self.buttons)
+        self.resize(620, 700)
         self.name_edit.setFocus()
 
     @staticmethod
@@ -182,6 +213,7 @@ class FoodEditorDialog(QDialog):
             fiber_g=self.fiber_spin.value(),
             default_serving=self.serving_spin.value(),
             is_favorite=self.favorite_check.isChecked(),
+            **{field: editor.value() for field, editor in self.nutrient_editors.items()},
         )
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         save.setEnabled(False)
@@ -211,6 +243,10 @@ class FoodLibraryPage(QWidget):
         "纤维",
         "收藏",
         "状态",
+        "蛋白质 / 100g",
+        "纤维 / 100g",
+        "脂肪 / 100g",
+        "碳水 / 100g",
     )
 
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
@@ -233,11 +269,14 @@ class FoodLibraryPage(QWidget):
         self.search_edit.setAccessibleName("搜索食品库")
         self.include_inactive = QCheckBox("显示已停用")
         self.include_inactive.setAccessibleName("显示已停用食品")
+        self.show_legacy = QCheckBox("显示旧版营养字段")
+        self.show_legacy.setToolTip("原基准下的兼容字段，不参与新的每日营养汇总")
 
         search_row = QHBoxLayout()
         search_row.setSpacing(10)
         search_row.addWidget(self.search_edit, 1)
         search_row.addWidget(self.include_inactive)
+        search_row.addWidget(self.show_legacy)
 
         self.table = QTableWidget(0, len(self._COLUMNS))
         self.table.setHorizontalHeaderLabels(self._COLUMNS)
@@ -249,6 +288,9 @@ class FoodLibraryPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAccessibleName("食品列表")
+        for index in range(5, 9):
+            self.table.setColumnHidden(index, True)
+        self.show_legacy.toggled.connect(self._show_legacy_columns)
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.table.itemDoubleClicked.connect(lambda _item: self.edit_selected())
 
@@ -307,6 +349,8 @@ class FoodLibraryPage(QWidget):
         self.table.setSortingEnabled(False)
         columns = list(self._COLUMNS)
         columns[4] = f"能量（{energy_unit_label(self._energy_unit)}）"
+        for index in range(5, 9):
+            columns[index] = "旧" + columns[index] + "（原基准）"
         self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(0)
         for food in foods:
@@ -324,12 +368,13 @@ class FoodLibraryPage(QWidget):
                 f"{food.fiber_g:.2f} g",
                 "是" if food.is_favorite else "否",
                 "正常" if food.active else "已停用",
+                *(format_nutrient(getattr(food, field)) for field in FOOD_NUTRIENT_FIELDS),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, food)
-                if column in (4, 5, 6, 7, 8):
+                if column in (4, 5, 6, 7, 8, 11, 12, 13, 14):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, column, item)
         self.table.setSortingEnabled(True)
@@ -338,6 +383,10 @@ class FoodLibraryPage(QWidget):
         self.table.setVisible(bool(foods))
         self._loaded = True
         self._update_actions()
+
+    def _show_legacy_columns(self, visible: bool) -> None:
+        for index in range(5, 9):
+            self.table.setColumnHidden(index, not visible)
 
     def selected_food(self) -> FoodDTO | None:
         row = self.table.currentRow()

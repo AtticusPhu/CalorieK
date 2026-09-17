@@ -28,22 +28,57 @@ ENERGY_COLUMN_MIGRATIONS = {
     ),
 }
 
+# Add only nullable metadata. Never reinterpret the legacy non-null macro
+# columns: their default zero cannot establish whether nutrition was known.
+NUTRITION_COLUMN_MIGRATIONS = {
+    "foods": tuple(
+        (name, f"REAL CHECK ({name} IS NULL OR {name} >= 0)")
+        for name in ("protein_g_per_100g", "fiber_g_per_100g", "fat_g_per_100g", "carbs_g_per_100g")
+    ),
+    "intake_events": tuple(
+        (name, f"REAL CHECK ({name} IS NULL OR {name} >= 0)")
+        for name in ("protein_g", "fiber_g", "fat_g", "carbs_g")
+    ) + (("nutrition_complete", "INTEGER CHECK (nutrition_complete IS NULL OR nutrition_complete IN (0, 1))"),),
+}
+
+
+def _nutrition_ddl() -> str:
+    return "\n".join(
+        f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition};'
+        for table, columns in NUTRITION_COLUMN_MIGRATIONS.items()
+        for name, definition in columns
+    )
+
 
 def schema_sql_for_version(version: int) -> str:
-    """Return the exact v1/v2 contract; their only DDL change is energy names.
+    """Return frozen legacy contracts plus the additive v3 extension.
 
     Keep this explicit version boundary when introducing future migrations: the
     v1 contract must continue to describe legacy bytes before they are upgraded.
     """
 
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise RuntimeError(f"unsupported schema version: {version}")
     sql = (Path(__file__).parent.parent / "schema.sql").read_text(encoding="utf-8")
     if version == 1:
         for columns in ENERGY_COLUMN_MIGRATIONS.values():
             for old_name, new_name in columns:
                 sql = re.sub(rf"\b{new_name}\b", old_name, sql)
+    if version == 3:
+        sql += "\n" + _nutrition_ddl() + "\n"
     return sql
+
+
+def migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Only append unknown nutrition columns inside the caller's transaction.
+
+    No UPDATE/DELETE, seeding, energy conversion or cache invalidation belongs
+    here. The original column values, timestamps and sequence values survive.
+    """
+
+    validate_schema(connection, 2)
+    execute_schema(connection, _nutrition_ddl())
+    validate_schema(connection, 3)
 
 
 def execute_schema(connection: sqlite3.Connection, sql: str) -> None:

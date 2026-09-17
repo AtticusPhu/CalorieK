@@ -79,7 +79,7 @@ class BackupService:
         """Validate the declared schema before migrating the isolated candidate."""
 
         schema_version = cls._read_schema_version(path)
-        if schema_version not in (1, SCHEMA_VERSION):
+        if schema_version not in (1, 2, SCHEMA_VERSION):
             raise BackupError(f"schema_version 不兼容：{schema_version}")
         try:
             with closing(sqlite3.connect(path)) as candidate:
@@ -88,7 +88,7 @@ class BackupService:
             raise BackupError(f"备份数据库结构无效：{exc}") from exc
 
         try:
-            # A legacy backup is converted only after its complete v1 structure
+            # A legacy backup is converted only after its declared v1/v2 structure
             # passes validation. All migration/seed writes target this temporary
             # candidate; a failure can never modify the live database.
             Database(path).initialize(seed_foods=True)
@@ -250,7 +250,7 @@ class BackupService:
         manifest = self.inspect_backup(source_zip)
         if manifest.app_name != APP_NAME:
             raise BackupError("该备份不属于 CalorieK。")
-        if manifest.schema_version not in (1, SCHEMA_VERSION):
+        if manifest.schema_version not in (1, 2, SCHEMA_VERSION):
             raise BackupError(
                 f"schema_version 不兼容：备份为 {manifest.schema_version}，"
                 f"程序要求 {SCHEMA_VERSION}。"

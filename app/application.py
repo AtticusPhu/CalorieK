@@ -13,11 +13,13 @@ from typing import Any, Sequence
 from app.color_modes import candle_palette, treemap_palette
 from app.db.database import Database
 from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit, format_energy, kcal_to_kj, normalize_energy_unit
+from app.nutrition import DailyNutrition, NutritionContribution, aggregate_contributions, food_contribution
 from app.paths import database_path, ensure_data_dir, save_data_dir_preference
 from app.services.backup_service import BackupService
 from app.services.daily_metrics_service import DailyMetricsService, parse_local_datetime
 from app.services.exercise_service import ExerciseService
 from app.services.food_service import FoodService
+from app.services.nutrition_service import NutritionService
 from app.services.profile_service import ProfileService
 from app.services.recipe_service import RecipeService
 from app.services.treemap_service import TreemapDataService
@@ -60,7 +62,8 @@ class ApplicationContext:
 
     def __init__(self, data_dir: str | Path | None = None) -> None:
         self._bind_data_dir(ensure_data_dir(data_dir))
-        self._seed_exercise_shortcuts()
+        if self.database.initial_schema_version in (0, 1):
+            self._seed_exercise_shortcuts()
 
     def _bind_data_dir(self, data_dir: str | Path) -> None:
         self.data_dir = ensure_data_dir(data_dir)
@@ -68,8 +71,10 @@ class ApplicationContext:
         self.database.initialize()
         self.profile = ProfileService(self.database)
         self.foods = FoodService(self.database)
-        self.foods.ensure_default_servings()
+        if self.database.initial_schema_version in (0, 1):
+            self.foods.ensure_default_servings()
         self.recipes = RecipeService(self.database)
+        self.nutrition = NutritionService(self.database)
         self.exercises = ExerciseService(self.database)
         self.daily = DailyMetricsService(self.database)
         self.treemap = TreemapDataService(self.database)
@@ -124,6 +129,10 @@ class ApplicationContext:
             data_source=str(row.get("data_source") or ""),
             source_version=str(row.get("source_version") or ""),
             active=bool(row["active"]),
+            protein_g_per_100g=row["protein_g_per_100g"],
+            fiber_g_per_100g=row["fiber_g_per_100g"],
+            fat_g_per_100g=row["fat_g_per_100g"],
+            carbs_g_per_100g=row["carbs_g_per_100g"],
         )
 
     def _intake_source_from_food(self, row: dict) -> IntakeSourceDTO:
@@ -398,6 +407,10 @@ class ApplicationContext:
             fiber_g=food.fiber_g,
             default_serving=food.default_serving,
             is_favorite=food.is_favorite,
+            protein_g_per_100g=food.protein_g_per_100g,
+            fiber_g_per_100g=food.fiber_g_per_100g,
+            fat_g_per_100g=food.fat_g_per_100g,
+            carbs_g_per_100g=food.carbs_g_per_100g,
         )
         if food.food_id is None:
             food_id = self.foods.create_food(**values)
@@ -453,6 +466,7 @@ class ApplicationContext:
             per_100g_fat_g=float(values.get("per_100g_fat_g", 0)),
             per_100g_carb_g=float(values.get("per_100g_carb_g", 0)),
             per_100g_fiber_g=float(values.get("per_100g_fiber_g", 0)),
+            composition=values.get("composition", NutritionContribution()),
         )
 
     def list_recipes(
@@ -483,7 +497,7 @@ class ApplicationContext:
         return self._recipe_detail(recipe_id)
 
     def preview_recipe(self, items: Sequence[RecipeItemDTO]) -> NutritionDTO:
-        totals = {
+        totals: dict[str, Any] = {
             "total_weight_g": 0.0,
             "total_volume_ml": 0.0,
             "kj": 0.0,
@@ -492,6 +506,7 @@ class ApplicationContext:
             "carb_g": 0.0,
             "fiber_g": 0.0,
         }
+        contributions = []
         for item in items:
             food = self.foods.get_food(item.food_id, include_inactive=False)
             if food is None:
@@ -511,6 +526,7 @@ class ApplicationContext:
             totals["fat_g"] += nutrition["fat"]
             totals["carb_g"] += nutrition["carb"]
             totals["fiber_g"] += nutrition["fiber"]
+            contributions.append(food_contribution(food, item.amount_g))
         has_weight = totals["total_weight_g"] > 0
         has_volume = totals["total_volume_ml"] > 0
         if has_weight and not has_volume:
@@ -532,6 +548,7 @@ class ApplicationContext:
                     "per_100g_fiber_g": totals["fiber_g"] * 100 / normalization_amount,
                 }
             )
+        totals["composition"] = aggregate_contributions(contributions)
         return self._nutrition_dto(totals)
 
     def save_recipe(self, recipe: RecipeDraft) -> RecipeDetailDTO:
@@ -734,6 +751,10 @@ class ApplicationContext:
     def export_data(self, destination: Path) -> Path:
         return self.backups.export_json(destination)
 
+    def get_daily_nutrition(self, day: date) -> DailyNutrition:
+        """Read snapshots only; selecting a nutrition date never recalculates energy."""
+        return self.nutrition.daily_totals(day)
+
     def get_dashboard(self, on_date: date | None = None) -> DashboardDTO:
         target = on_date or date.today()
         self.daily.ensure_calculated(target)
@@ -769,6 +790,7 @@ class ApplicationContext:
         treemap_items = self.treemap.build_day(target, baseline_kj=baseline)
         return DashboardDTO(
             as_of=datetime.now(),
+            nutrition=self.get_daily_nutrition(target),
             latest_actual_weight_kg=actual_weight,
             latest_actual_at=actual_at,
             predicted_weight_kg=(

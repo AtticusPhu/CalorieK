@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.energy_units import EnergyUnit, format_energy, normalize_energy_unit
+from app.nutrition import NUTRIENT_NAMES, format_nutrient
+from .nutrition import NUTRIENT_CAPTIONS
 from .numeric_input import PreciseDoubleSpinBox
 
 from typing import cast
@@ -79,12 +81,12 @@ class _NutritionSummary(QFrame):
             (
                 ("weight", "总重量"),
                 ("energy", "总能量"),
-                ("protein", "蛋白质"),
-                ("fat", "脂肪"),
-                ("carb", "碳水"),
-                ("fiber", "膳食纤维"),
+                ("protein", "旧蛋白质（原基准）"),
+                ("fat", "旧脂肪（原基准）"),
+                ("carb", "旧碳水（原基准）"),
+                ("fiber", "旧膳食纤维（原基准）"),
                 ("per100", "每 100g 能量"),
-                ("per100_macros", "每 100g 宏量"),
+                ("per100_macros", "旧宏量 / 100g"),
             )
         ):
             caption_label = QLabel(caption)
@@ -100,6 +102,18 @@ class _NutritionSummary(QFrame):
             cell.addWidget(caption_label)
             cell.addWidget(value)
             grid.addLayout(cell, row, column)
+        self.composition_labels: dict[str, QLabel] = {}
+        for column, (name, caption) in enumerate(zip(NUTRIENT_NAMES, NUTRIENT_CAPTIONS, strict=True)):
+            label = QLabel("未知")
+            label.setAccessibleName(f"配方{caption}合计")
+            self.composition_labels[name] = label
+            cell = QVBoxLayout()
+            cell.addWidget(QLabel(f"{caption}合计（每日营养）"))
+            cell.addWidget(label)
+            grid.addLayout(cell, 2, column)
+        self.composition_status = QLabel("")
+        self.composition_status.setWordWrap(True)
+        grid.addWidget(self.composition_status, 3, 0, 1, 4)
 
     def set_display_unit(self, unit: EnergyUnit) -> None:
         self._energy_unit = normalize_energy_unit(unit)
@@ -110,6 +124,9 @@ class _NutritionSummary(QFrame):
         if nutrition is None:
             for label in self._labels.values():
                 label.setText("--")
+            for label in self.composition_labels.values():
+                label.setText("未知")
+            self.composition_status.setText("营养数据暂不可用")
             self.setAccessibleDescription("营养数据暂不可用")
             return
         self._captions["weight"].setText(
@@ -131,15 +148,22 @@ class _NutritionSummary(QFrame):
         self._labels["fat"].setText(f"{nutrition.fat_g:.2f} g")
         self._labels["carb"].setText(f"{nutrition.carb_g:.2f} g")
         self._labels["fiber"].setText(f"{nutrition.fiber_g:.2f} g")
+        for name, label in self.composition_labels.items():
+            label.setText(format_nutrient(getattr(nutrition.composition.values, name)))
+        self.composition_status.setText(
+            "配方营养数据完整；摄入时按用量保存快照。"
+            if nutrition.composition.complete else
+            "部分原料无营养数据；仅显示已知部分合计，不是完整总量（ml 无密度无法换算）。"
+        )
         if nutrition.normalization_unit is None:
             self._captions["per100"].setText("每 100 单位能量")
-            self._captions["per100_macros"].setText("每 100 单位宏量")
+            self._captions["per100_macros"].setText("旧宏量 / 100 单位")
             self._labels["per100"].setText("不适用于 g/ml 混合食谱")
             self._labels["per100_macros"].setText("请按整份比例记录摄入")
         else:
             basis = nutrition.normalization_unit
             self._captions["per100"].setText(f"每 100{basis} 能量")
-            self._captions["per100_macros"].setText(f"每 100{basis} 宏量")
+            self._captions["per100_macros"].setText(f"旧宏量 / 100{basis}")
             self._labels["per100"].setText(
                 format_energy(nutrition.per_100g_kj, self._energy_unit)
             )

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal, Protocol, Sequence, runtime_checkable
 
 from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit
+from app.nutrition import DailyNutrition, NutritionContribution
 
 
 ColorMode = Literal["china", "international"]
@@ -81,6 +82,7 @@ class DashboardDTO:
     candles: tuple[CandleDTO, ...] = ()
     treemap_items: tuple[TreemapItemDTO, ...] = ()
     calibration_kj_day: float = 0.0
+    nutrition: DailyNutrition | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +189,10 @@ class FoodDTO:
     data_source: str = ""
     source_version: str = ""
     active: bool = True
+    protein_g_per_100g: float | None = None
+    fiber_g_per_100g: float | None = None
+    fat_g_per_100g: float | None = None
+    carbs_g_per_100g: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +210,10 @@ class FoodDraft:
     fiber_g: float
     default_serving: float
     is_favorite: bool
+    protein_g_per_100g: float | None = None
+    fiber_g_per_100g: float | None = None
+    fat_g_per_100g: float | None = None
+    carbs_g_per_100g: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +250,7 @@ class NutritionDTO:
     per_100g_fat_g: float = 0.0
     per_100g_carb_g: float = 0.0
     per_100g_fiber_g: float = 0.0
+    composition: NutritionContribution = field(default_factory=NutritionContribution)
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +306,8 @@ class SettingsDraft:
 @runtime_checkable
 class UIContext(Protocol):
     """Application-facing operations required by the Qt presentation layer."""
+
+    def get_daily_nutrition(self, day: date) -> DailyNutrition: ...
 
     def has_profile(self) -> bool: ...
 

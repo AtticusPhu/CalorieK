@@ -9,6 +9,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.db.database import Database, normalize_datetime, now_iso, row_to_dict
+from app.nutrition import aggregate_contributions, food_contribution
 from app.services.food_service import normalize_meal_type
 
 
@@ -284,7 +285,9 @@ class RecipeService:
         rows = connection.execute(
             """
             SELECT ri.amount, ri.unit, f.basis_amount, f.basis_unit,
-                   f.kj, f.protein_g, f.fat_g, f.carb_g, f.fiber_g
+                   f.kj, f.protein_g, f.fat_g, f.carb_g, f.fiber_g,
+                   f.protein_g_per_100g, f.fiber_g_per_100g,
+                   f.fat_g_per_100g, f.carbs_g_per_100g
             FROM recipe_items ri JOIN foods f ON f.id = ri.food_id
             WHERE ri.recipe_id = ? AND ri.active = 1
             ORDER BY ri.id
@@ -313,6 +316,9 @@ class RecipeService:
             totals["fat_g"] += float(row["fat_g"]) * factor
             totals["carb_g"] += float(row["carb_g"]) * factor
             totals["fiber_g"] += float(row["fiber_g"]) * factor
+        totals["composition"] = aggregate_contributions(
+            food_contribution(dict(row), float(row["amount"])) for row in rows
+        )
         return RecipeService._finalize_totals(
             totals,
             total_weight_g=total_weight_g,
@@ -341,10 +347,12 @@ class RecipeService:
             }
             total_weight_g = 0.0
             total_volume_ml = 0.0
+            contributions = []
             for food_id, amount, unit in normalized_items:
                 food = connection.execute(
                     """
-                    SELECT basis_amount, kj, protein_g, fat_g, carb_g, fiber_g
+                    SELECT basis_amount, basis_unit, kj, protein_g, fat_g, carb_g, fiber_g,
+                           protein_g_per_100g, fiber_g_per_100g, fat_g_per_100g, carbs_g_per_100g
                     FROM foods WHERE id = ? AND active = 1
                     """,
                     (food_id,),
@@ -361,6 +369,8 @@ class RecipeService:
                 totals["fat_g"] += float(food["fat_g"]) * factor
                 totals["carb_g"] += float(food["carb_g"]) * factor
                 totals["fiber_g"] += float(food["fiber_g"]) * factor
+                contributions.append(food_contribution(dict(food), amount))
+            totals["composition"] = aggregate_contributions(contributions)
         return self._finalize_totals(
             totals,
             total_weight_g=total_weight_g,
@@ -430,8 +440,9 @@ class RecipeService:
                     occurred_at, local_date, source_type, source_id, meal_type,
                     name_snapshot, amount, unit, kj_snapshot,
                     protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
-                    note, created_at, updated_at, active
-                ) VALUES (?, ?, 'RECIPE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    note, created_at, updated_at, active,
+                    protein_g, fiber_g, fat_g, carbs_g, nutrition_complete
+                ) VALUES (?, ?, 'RECIPE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """,
                 (
                     occurred_value,
@@ -449,6 +460,7 @@ class RecipeService:
                     note,
                     timestamp,
                     timestamp,
+                    *totals["composition"].scaled(ratio).snapshot_values(),
                 ),
             )
             self.db.mark_dirty(local_date, connection=connection)
