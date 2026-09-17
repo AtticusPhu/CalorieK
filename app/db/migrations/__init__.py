@@ -1,7 +1,19 @@
-"""Migration package.
+"""Public schema and migration helpers for the persistence layer."""
 
-Version 1 is defined by :mod:`app.db.schema.sql` and applied idempotently by
-``Database.initialize``. Future versions can be added here without changing the
-service layer.
-"""
+from .schema import (
+    ENERGY_COLUMN_MIGRATIONS,
+    execute_schema,
+    migrate_v1_to_v2,
+    schema_signature,
+    schema_sql_for_version,
+    validate_schema,
+)
 
+__all__ = [
+    "ENERGY_COLUMN_MIGRATIONS",
+    "execute_schema",
+    "migrate_v1_to_v2",
+    "schema_signature",
+    "schema_sql_for_version",
+    "validate_schema",
+]

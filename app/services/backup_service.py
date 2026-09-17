@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.database import Database
+from app.db.migrations import validate_schema
 from app.version import APP_NAME, APP_VERSION, SCHEMA_VERSION
 
 
@@ -69,99 +70,58 @@ class BackupService:
             raise BackupError(f"无法读取备份数据库：{exc}") from exc
         if not check or check[0] != "ok":
             raise BackupError("备份数据库未通过 SQLite 完整性校验。")
-        if not row or row[0] is None:
-            raise BackupError("备份数据库缺少 schema_version。")
-        return int(row[0])
-
-    @staticmethod
-    def _schema_signature(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
-        """Return the structural contract needed by the current application."""
-
-        tables = connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        ).fetchall()
-        signature: dict[str, dict[str, Any]] = {}
-        for (raw_name,) in tables:
-            name = str(raw_name)
-            quoted = name.replace('"', '""')
-            columns = [
-                tuple(row[1:6])
-                for row in connection.execute(
-                    f'PRAGMA table_info("{quoted}")'
-                ).fetchall()
-            ]
-            foreign_keys = [
-                tuple(row[2:8])
-                for row in connection.execute(
-                    f'PRAGMA foreign_key_list("{quoted}")'
-                ).fetchall()
-            ]
-            signature[name] = {
-                "columns": columns,
-                "foreign_keys": foreign_keys,
-            }
-        return signature
+        if not row or type(row[0]) is not int or row[0] < 1:
+            raise BackupError("备份数据库缺少有效的整数 schema_version。")
+        return row[0]
 
     @classmethod
     def _validate_database_structure(cls, path: Path) -> int:
-        """Validate integrity and the full V1 table/column contract in isolation."""
+        """Validate the declared schema before migrating the isolated candidate."""
 
         schema_version = cls._read_schema_version(path)
-        if schema_version != SCHEMA_VERSION:
-            return schema_version
+        if schema_version not in (1, SCHEMA_VERSION):
+            raise BackupError(f"schema_version 不兼容：{schema_version}")
         try:
-            schema_path = Path(__file__).parents[1] / "db" / "schema.sql"
-            schema_sql = schema_path.read_text(encoding="utf-8")
-            with closing(sqlite3.connect(":memory:")) as expected:
-                expected.executescript(schema_sql)
-                expected_signature = cls._schema_signature(expected)
             with closing(sqlite3.connect(path)) as candidate:
-                integrity = candidate.execute("PRAGMA integrity_check").fetchone()
-                if not integrity or integrity[0] != "ok":
-                    raise BackupError("备份数据库未通过 SQLite 完整性校验。")
-                foreign_key_errors = candidate.execute(
-                    "PRAGMA foreign_key_check"
-                ).fetchall()
-                if foreign_key_errors:
-                    raise BackupError("备份数据库包含无效的外键引用。")
-                actual_signature = cls._schema_signature(candidate)
-                unexpected_programmable_objects = candidate.execute(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type IN ('trigger', 'view') ORDER BY name"
-                ).fetchall()
-        except BackupError:
-            raise
-        except (OSError, UnicodeError, sqlite3.Error, RuntimeError) as exc:
+                validate_schema(candidate, schema_version)
+        except (OSError, UnicodeError, sqlite3.Error, RuntimeError, ValueError) as exc:
             raise BackupError(f"备份数据库结构无效：{exc}") from exc
 
-        missing_tables = sorted(set(expected_signature) - set(actual_signature))
-        mismatched_tables = sorted(
-            table
-            for table, expected_table in expected_signature.items()
-            if table in actual_signature
-            and actual_signature[table] != expected_table
-        )
-        if missing_tables or mismatched_tables:
-            details: list[str] = []
-            if missing_tables:
-                details.append("缺少表 " + ", ".join(missing_tables))
-            if mismatched_tables:
-                details.append("列或外键不匹配 " + ", ".join(mismatched_tables))
-            raise BackupError("备份数据库结构无效：" + "；".join(details))
-        if unexpected_programmable_objects:
-            names = ", ".join(str(row[0]) for row in unexpected_programmable_objects)
-            raise BackupError("备份数据库结构无效：包含未知触发器或视图 " + names)
-
         try:
-            # Only after proving that no required table/column is missing, run
-            # the exact idempotent startup path against the isolated candidate.
-            # This validates indexes and the built-in seed operation without
-            # allowing initialize() to silently recreate a missing backup table.
+            # A legacy backup is converted only after its complete v1 structure
+            # passes validation. All migration/seed writes target this temporary
+            # candidate; a failure can never modify the live database.
             Database(path).initialize(seed_foods=True)
+            if cls._read_schema_version(path) != SCHEMA_VERSION:
+                raise BackupError("迁移后的备份数据库不是当前 schema_version。")
+            with closing(sqlite3.connect(path)) as candidate:
+                validate_schema(candidate, SCHEMA_VERSION)
         except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
             raise BackupError(f"备份数据库无法完成启动验证：{exc}") from exc
         return schema_version
+
+    @staticmethod
+    def _checkpoint_for_replace(connection: sqlite3.Connection) -> None:
+        """Never discard WAL frames when another connection blocks checkpointing."""
+
+        result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if not result or result[0] != 0 or result[1] != result[2]:
+            raise BackupError("数据库正被其他连接使用，无法安全完成 WAL checkpoint；请关闭其他实例后重试。")
+
+    def _prepare_live_for_replace(self) -> None:
+        """Let SQLite remove its sidecars only after excluding existing WAL users.
+
+        Merely checkpointing successfully is insufficient: idle/read connections
+        may still own the WAL/SHM files. The journal-mode transition requires an
+        exclusive SQLite lock and fails safely if such a connection remains.
+        Never unlink another connection's WAL/SHM files ourselves.
+        """
+
+        with closing(sqlite3.connect(self.database_path, timeout=0)) as connection:
+            self._checkpoint_for_replace(connection)
+            mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+            if not mode or str(mode[0]).lower() != "delete":
+                raise BackupError("数据库正被其他连接使用，无法安全替换。")
 
     def create_backup(
         self, destination: str | Path | None = None, *, prefix: str = "caloriek"
@@ -257,10 +217,12 @@ class BackupService:
         except (OSError, zipfile.BadZipFile, KeyError, ValueError, UnicodeError) as exc:
             raise BackupError(f"无法读取备份包：{exc}") from exc
         try:
+            if type(raw["schema_version"]) is not int:
+                raise ValueError("schema_version must be an integer")
             manifest = BackupManifest(
                 app_name=str(raw["app_name"]),
                 app_version=str(raw["app_version"]),
-                schema_version=int(raw["schema_version"]),
+                schema_version=raw["schema_version"],
                 created_at=str(raw["created_at"]),
                 database_file=str(raw.get("database_file", "caloriek.sqlite3")),
             )
@@ -288,7 +250,7 @@ class BackupService:
         manifest = self.inspect_backup(source_zip)
         if manifest.app_name != APP_NAME:
             raise BackupError("该备份不属于 CalorieK。")
-        if manifest.schema_version != SCHEMA_VERSION:
+        if manifest.schema_version not in (1, SCHEMA_VERSION):
             raise BackupError(
                 f"schema_version 不兼容：备份为 {manifest.schema_version}，"
                 f"程序要求 {SCHEMA_VERSION}。"
@@ -298,14 +260,16 @@ class BackupService:
             candidate = temporary_dir / "candidate.sqlite3"
             stage: Path | None = None
             safety_backup: Path | None = None
+            live_prepared = False
             try:
                 with zipfile.ZipFile(source_zip, "r") as archive:
                     with archive.open(manifest.database_file, "r") as source:
                         with candidate.open("wb") as target:
                             shutil.copyfileobj(source, target)
-                actual_schema = self._validate_database_structure(candidate)
+                actual_schema = self._read_schema_version(candidate)
                 if actual_schema != manifest.schema_version:
                     raise BackupError("数据库 schema 与 manifest 不一致。")
+                self._validate_database_structure(candidate)
 
                 # WAL is a persistent database-header setting. Enable it on the
                 # isolated candidate so every fallible SQLite operation finishes
@@ -316,7 +280,7 @@ class BackupService:
                     ).fetchone()
                     if not mode or str(mode[0]).lower() != "wal":
                         raise BackupError("无法为恢复数据库启用 WAL。")
-                    candidate_connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self._checkpoint_for_replace(candidate_connection)
 
                 stage = self.data_dir / f".restore_{self._file_timestamp()}.sqlite3"
                 shutil.copy2(candidate, stage)
@@ -325,22 +289,30 @@ class BackupService:
                 # safety backup immediately before touching the live database.
                 safety_backup = self.create_backup(prefix="pre_restore")
                 if self.database_path.exists():
-                    with closing(sqlite3.connect(self.database_path)) as connection:
-                        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                for suffix in ("-wal", "-shm"):
-                    Path(f"{self.database_path}{suffix}").unlink(missing_ok=True)
+                    self._prepare_live_for_replace()
+                    live_prepared = True
                 os.replace(stage, self.database_path)
                 stage = None
-            except BackupError:
-                raise
-            except (OSError, sqlite3.Error, zipfile.BadZipFile, KeyError) as exc:
+                live_prepared = False
+            except (BackupError, OSError, sqlite3.Error, zipfile.BadZipFile, KeyError) as exc:
+                journal_warning = ""
+                if live_prepared:
+                    try:
+                        # A failed rename still leaves the original main file.
+                        # Restore its usual WAL mode without changing user rows.
+                        with closing(sqlite3.connect(self.database_path, timeout=0)) as connection:
+                            mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()
+                            if not mode or str(mode[0]).lower() != "wal":
+                                raise BackupError("无法恢复 WAL 模式")
+                    except (OSError, sqlite3.Error, BackupError) as journal_error:
+                        journal_warning = f"；原库仍保留，但 WAL 模式恢复失败：{journal_error}"
                 location = (
                     f"；安全备份位于 {safety_backup}"
                     if safety_backup is not None
                     else ""
                 )
                 raise BackupError(
-                    f"恢复失败，当前数据库保持不变{location}：{exc}"
+                    f"恢复失败，当前数据库保持不变{location}{journal_warning}：{exc}"
                 ) from exc
             finally:
                 if stage is not None:

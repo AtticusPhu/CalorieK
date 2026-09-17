@@ -28,8 +28,8 @@ class DailyProjectionInput:
 
     ``events`` may cover the interval from the latest actual weight through
     ``as_of``; today's summary only counts events whose local date is ``day``.
-    ``baseline_burn_since_anchor_kcal`` covers anchor-to-as-of, while
-    ``remaining_baseline_burn_kcal`` covers as-of-to-midnight. Supplying these
+    ``baseline_burn_since_anchor_kj`` covers anchor-to-as-of, while
+    ``remaining_baseline_burn_kj`` covers as-of-to-midnight. Supplying these
     explicitly keeps wake/sleep integration out of this orchestration model.
     """
 
@@ -38,10 +38,10 @@ class DailyProjectionInput:
     latest_actual_weight_kg: float | None
     latest_actual_at: datetime | None
     events: tuple[EnergyEvent, ...] = ()
-    baseline_burn_since_anchor_kcal: float = 0.0
-    remaining_baseline_burn_kcal: float = 0.0
-    today_baseline_burn_elapsed_kcal: float = 0.0
-    calibration_kcal_day: float = 0.0
+    baseline_burn_since_anchor_kj: float = 0.0
+    remaining_baseline_burn_kj: float = 0.0
+    today_baseline_burn_elapsed_kj: float = 0.0
+    calibration_kj_day: float = 0.0
     calibration_days_from_anchor_to_end: float | None = None
 
     def __post_init__(self) -> None:
@@ -61,9 +61,9 @@ class DailyProjectionInput:
                 raise ValueError("latest_actual_at cannot be after as_of")
             object.__setattr__(self, "latest_actual_weight_kg", weight)
         for name in (
-            "baseline_burn_since_anchor_kcal",
-            "remaining_baseline_burn_kcal",
-            "today_baseline_burn_elapsed_kcal",
+            "baseline_burn_since_anchor_kj",
+            "remaining_baseline_burn_kj",
+            "today_baseline_burn_elapsed_kj",
         ):
             value = _finite(name, getattr(self, name))
             if value < 0:
@@ -71,8 +71,8 @@ class DailyProjectionInput:
             object.__setattr__(self, name, value)
         object.__setattr__(
             self,
-            "calibration_kcal_day",
-            _finite("calibration_kcal_day", self.calibration_kcal_day),
+            "calibration_kj_day",
+            _finite("calibration_kj_day", self.calibration_kj_day),
         )
         if self.calibration_days_from_anchor_to_end is not None:
             fraction = _finite(
@@ -94,14 +94,14 @@ class DailyProjectionResult:
     latest_actual_at: datetime
     predicted_close_kg: float
     predicted_change_from_actual_kg: float
-    today_intake_kcal: float
-    today_exercise_kcal: float
-    today_baseline_projected_kcal: float
-    today_total_burn_projected_kcal: float
-    today_balance_kcal: float
-    today_model_adjusted_balance_kcal: float
-    calibration_kcal_day: float
-    calibration_applied_since_anchor_kcal: float
+    today_intake_kj: float
+    today_exercise_kj: float
+    today_baseline_projected_kj: float
+    today_total_burn_projected_kj: float
+    today_balance_kj: float
+    today_model_adjusted_balance_kj: float
+    calibration_kj_day: float
+    calibration_applied_since_anchor_kj: float
 
 
 @runtime_checkable
@@ -128,7 +128,7 @@ class DefaultDailyProjectionService:
             for event in inputs.events
             if anchor_at < event.occurred_at <= inputs.as_of
         ]
-        energy_from_events = sum(event.signed_kcal for event in relevant_events)
+        energy_from_events = sum(event.signed_kj for event in relevant_events)
 
         if inputs.calibration_days_from_anchor_to_end is None:
             end_of_day = datetime.combine(
@@ -147,11 +147,11 @@ class DefaultDailyProjectionService:
         else:
             calibration_days = inputs.calibration_days_from_anchor_to_end
 
-        calibration_applied = inputs.calibration_kcal_day * calibration_days
+        calibration_applied = inputs.calibration_kj_day * calibration_days
         model_energy = (
             energy_from_events
-            - inputs.baseline_burn_since_anchor_kcal
-            - inputs.remaining_baseline_burn_kcal
+            - inputs.baseline_burn_since_anchor_kj
+            - inputs.remaining_baseline_burn_kj
             - calibration_applied
         )
         predicted = inputs.latest_actual_weight_kg + self.weight_model.energy_to_weight_delta(
@@ -162,18 +162,18 @@ class DefaultDailyProjectionService:
             event for event in inputs.events if event.occurred_at.date() == inputs.day
         ]
         today_intake = sum(
-            event.kcal
+            event.kj
             for event in today_events
             if event.event_type is EnergyEventType.INTAKE
         )
         today_exercise = sum(
-            event.kcal
+            event.kj
             for event in today_events
             if event.event_type is EnergyEventType.EXERCISE
         )
         today_baseline = (
-            inputs.today_baseline_burn_elapsed_kcal
-            + inputs.remaining_baseline_burn_kcal
+            inputs.today_baseline_burn_elapsed_kj
+            + inputs.remaining_baseline_burn_kj
         )
         today_total_burn = today_baseline + today_exercise
         today_balance = today_intake - today_total_burn
@@ -186,14 +186,14 @@ class DefaultDailyProjectionService:
             predicted_change_from_actual_kg=(
                 predicted - inputs.latest_actual_weight_kg
             ),
-            today_intake_kcal=today_intake,
-            today_exercise_kcal=today_exercise,
-            today_baseline_projected_kcal=today_baseline,
-            today_total_burn_projected_kcal=today_total_burn,
-            today_balance_kcal=today_balance,
-            today_model_adjusted_balance_kcal=(
-                today_balance - inputs.calibration_kcal_day
+            today_intake_kj=today_intake,
+            today_exercise_kj=today_exercise,
+            today_baseline_projected_kj=today_baseline,
+            today_total_burn_projected_kj=today_total_burn,
+            today_balance_kj=today_balance,
+            today_model_adjusted_balance_kj=(
+                today_balance - inputs.calibration_kj_day
             ),
-            calibration_kcal_day=inputs.calibration_kcal_day,
-            calibration_applied_since_anchor_kcal=calibration_applied,
+            calibration_kj_day=inputs.calibration_kj_day,
+            calibration_applied_since_anchor_kj=calibration_applied,
         )

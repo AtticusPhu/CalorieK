@@ -25,7 +25,7 @@ class ExerciseService:
         *,
         name: str,
         default_duration_min: float | None = None,
-        default_active_kcal: float | None = None,
+        default_active_kj: float | None = None,
         favorite: bool = False,
     ) -> int:
         if not name.strip():
@@ -35,9 +35,9 @@ class ExerciseService:
             if default_duration_min is not None
             else None
         )
-        kcal_value = (
-            _non_negative(default_active_kcal, "default_active_kcal")
-            if default_active_kcal is not None
+        kj_value = (
+            _non_negative(default_active_kj, "default_active_kj")
+            if default_active_kj is not None
             else None
         )
         timestamp = now_iso()
@@ -45,14 +45,14 @@ class ExerciseService:
             cursor = connection.execute(
                 """
                 INSERT INTO exercise_types(
-                    name, default_duration_min, default_active_kcal, favorite,
+                    name, default_duration_min, default_active_kj, favorite,
                     created_at, updated_at, active
                 ) VALUES (?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     name.strip(),
                     duration_value,
-                    kcal_value,
+                    kj_value,
                     int(favorite),
                     timestamp,
                     timestamp,
@@ -103,7 +103,7 @@ class ExerciseService:
         return [dict(row) for row in rows]
 
     def update_exercise_type(self, exercise_type_id: int, **changes: Any) -> None:
-        allowed = {"name", "default_duration_min", "default_active_kcal", "favorite"}
+        allowed = {"name", "default_duration_min", "default_active_kj", "favorite"}
         unknown = set(changes) - allowed
         if unknown:
             raise ValueError(f"unsupported exercise fields: {sorted(unknown)}")
@@ -111,13 +111,13 @@ class ExerciseService:
             return
         if "name" in changes and not str(changes["name"]).strip():
             raise ValueError("exercise name must not be empty")
-        for field in ("default_duration_min", "default_active_kcal"):
+        for field in ("default_duration_min", "default_active_kj"):
             if field in changes and changes[field] is not None and float(changes[field]) < 0:
                 raise ValueError(f"{field} must be non-negative")
         normalized = dict(changes)
         if "name" in normalized:
             normalized["name"] = str(normalized["name"]).strip()
-        for field in ("default_duration_min", "default_active_kcal"):
+        for field in ("default_duration_min", "default_active_kj"):
             if field in normalized and normalized[field] is not None:
                 normalized[field] = _non_negative(normalized[field], field)
         if "favorite" in normalized:
@@ -158,7 +158,7 @@ class ExerciseService:
         with self.db.connection() as connection:
             row = connection.execute(
                 """
-                SELECT duration_min, active_kcal FROM exercise_events
+                SELECT duration_min, active_kj FROM exercise_events
                 WHERE exercise_type_id = ? AND active = 1
                 ORDER BY occurred_at DESC, id DESC LIMIT 1
                 """,
@@ -167,7 +167,7 @@ class ExerciseService:
         if row is not None:
             return {
                 "duration_min": float(row["duration_min"]),
-                "active_kcal": float(row["active_kcal"]),
+                "active_kj": float(row["active_kj"]),
             }
         return {
             "duration_min": (
@@ -175,10 +175,10 @@ class ExerciseService:
                 if exercise_type["default_duration_min"] is None
                 else float(exercise_type["default_duration_min"])
             ),
-            "active_kcal": (
+            "active_kj": (
                 None
-                if exercise_type["default_active_kcal"] is None
-                else float(exercise_type["default_active_kcal"])
+                if exercise_type["default_active_kj"] is None
+                else float(exercise_type["default_active_kj"])
             ),
         }
 
@@ -187,7 +187,7 @@ class ExerciseService:
         exercise_type_id: int,
         *,
         duration_min: float | None = None,
-        active_kcal: float | None = None,
+        active_kj: float | None = None,
         occurred_at: datetime | date | str | None = None,
         note: str | None = None,
     ) -> int:
@@ -196,11 +196,11 @@ class ExerciseService:
             raise LookupError(f"active exercise type {exercise_type_id} does not exist")
         carried = self.get_last_values(exercise_type_id)
         duration_value = carried["duration_min"] if duration_min is None else duration_min
-        kcal_value = carried["active_kcal"] if active_kcal is None else active_kcal
-        if duration_value is None or kcal_value is None:
-            raise ValueError("duration and active kcal need values or defaults")
+        kj_value = carried["active_kj"] if active_kj is None else active_kj
+        if duration_value is None or kj_value is None:
+            raise ValueError("duration and active kJ need values or defaults")
         duration_value = _non_negative(duration_value, "duration_min")
-        kcal_value = _non_negative(kcal_value, "active_kcal")
+        kj_value = _non_negative(kj_value, "active_kj")
         occurred_value, local_date = normalize_datetime(occurred_at)
         timestamp = now_iso()
         with self.db.transaction() as connection:
@@ -208,7 +208,7 @@ class ExerciseService:
                 """
                 INSERT INTO exercise_events(
                     occurred_at, local_date, exercise_type_id, name_snapshot,
-                    duration_min, active_kcal, note, created_at, updated_at, active
+                    duration_min, active_kj, note, created_at, updated_at, active
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
@@ -217,7 +217,7 @@ class ExerciseService:
                     exercise_type_id,
                     exercise_type["name"],
                     duration_value,
-                    kcal_value,
+                    kj_value,
                     note,
                     timestamp,
                     timestamp,
@@ -263,7 +263,7 @@ class ExerciseService:
         *,
         exercise_type_id: int | None = None,
         duration_min: float | None = None,
-        active_kcal: float | None = None,
+        active_kj: float | None = None,
         occurred_at: datetime | date | str | None = None,
         note: str | None = None,
         update_note: bool = False,
@@ -286,9 +286,9 @@ class ExerciseService:
             duration_min if duration_min is not None else event["duration_min"],
             "duration_min",
         )
-        kcal_value = _non_negative(
-            active_kcal if active_kcal is not None else event["active_kcal"],
-            "active_kcal",
+        kj_value = _non_negative(
+            active_kj if active_kj is not None else event["active_kj"],
+            "active_kj",
         )
         if occurred_at is None:
             occurred_value, local_date = event["occurred_at"], event["local_date"]
@@ -299,7 +299,7 @@ class ExerciseService:
                 """
                 UPDATE exercise_events SET occurred_at = ?, local_date = ?,
                     exercise_type_id = ?, name_snapshot = ?, duration_min = ?,
-                    active_kcal = ?, note = ?, updated_at = ? WHERE id = ?
+                    active_kj = ?, note = ?, updated_at = ? WHERE id = ?
                 """,
                 (
                     occurred_value,
@@ -307,7 +307,7 @@ class ExerciseService:
                     type_id,
                     name_snapshot,
                     duration_value,
-                    kcal_value,
+                    kj_value,
                     note if update_note or note is not None else event["note"],
                     now_iso(),
                     event_id,

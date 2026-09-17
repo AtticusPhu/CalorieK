@@ -60,7 +60,7 @@ class ProfileDialog(QDialog):
 
         self.height_spin = QDoubleSpinBox()
         self.height_spin.setRange(80.0, 250.0)
-        self.height_spin.setDecimals(1)
+        self.height_spin.setDecimals(2)
         self.height_spin.setValue(170.0)
         self.height_spin.setSuffix(" cm")
         self.height_spin.setAccessibleName("身高")

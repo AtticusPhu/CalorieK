@@ -15,8 +15,8 @@ class MifflinStJeorTests(unittest.TestCase):
         female = self.model.calculate_rmr(
             sex="female", weight_kg=70, height_cm=175, age_years=30
         )
-        self.assertAlmostEqual(male, 1648.75)
-        self.assertAlmostEqual(female, 1482.75)
+        self.assertAlmostEqual(male, 6898.37)
+        self.assertAlmostEqual(female, 6203.826)
 
     def test_age_is_calculated_for_requested_date(self) -> None:
         born = date(2000, 9, 1)
@@ -25,7 +25,7 @@ class MifflinStJeorTests(unittest.TestCase):
 
     def test_baseline_interval_crosses_midnight(self) -> None:
         result = self.model.calculate_baseline_burn(
-            rmr_kcal_day=2400,
+            rmr_kj_day=10041.6,
             start_at=datetime(2026, 8, 25, 22),
             end_at=datetime(2026, 8, 26, 8),
             wake_time=time(7),
@@ -33,22 +33,22 @@ class MifflinStJeorTests(unittest.TestCase):
         )
         self.assertAlmostEqual(result.awake_hours, 2.0)
         self.assertAlmostEqual(result.sleep_hours, 8.0)
-        self.assertAlmostEqual(result.total_kcal, 1000.0)
+        self.assertAlmostEqual(result.total_kj, 4184.0)
 
     def test_full_natural_day_uses_awake_and_sleep_multipliers(self) -> None:
         result = self.model.calculate_day_baseline(
             local_date=date(2026, 8, 25),
-            rmr_kcal_day=2400,
+            rmr_kj_day=10041.6,
             wake_time=time(7),
             sleep_time=time(23),
         )
         self.assertAlmostEqual(result.awake_hours, 16.0)
         self.assertAlmostEqual(result.sleep_hours, 8.0)
-        self.assertAlmostEqual(result.total_kcal, 2680.0)
+        self.assertAlmostEqual(result.total_kj, 11213.12)
 
     def test_night_shift_awake_period_can_cross_midnight(self) -> None:
         result = self.model.calculate_baseline_burn(
-            rmr_kcal_day=2400,
+            rmr_kj_day=10041.6,
             start_at=datetime(2026, 8, 25, 23),
             end_at=datetime(2026, 8, 26, 6),
             wake_time=time(20),

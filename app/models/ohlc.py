@@ -91,20 +91,20 @@ class EnergyEvent:
     """A positive-sized intake or active-exercise event."""
 
     occurred_at: datetime
-    kcal: float
+    kj: float
     event_type: EnergyEventType | str
     name: str = ""
 
     def __post_init__(self) -> None:
-        kcal = _finite("kcal", self.kcal)
-        if kcal < 0:
-            raise ValueError("kcal must be non-negative; use event_type for sign")
-        object.__setattr__(self, "kcal", kcal)
+        kj = _finite("kj", self.kj)
+        if kj < 0:
+            raise ValueError("kj must be non-negative; use event_type for sign")
+        object.__setattr__(self, "kj", kj)
         object.__setattr__(self, "event_type", _coerce_event_type(self.event_type))
 
     @property
-    def signed_kcal(self) -> float:
-        return self.kcal if self.event_type is EnergyEventType.INTAKE else -self.kcal
+    def signed_kj(self) -> float:
+        return self.kj if self.event_type is EnergyEventType.INTAKE else -self.kj
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +113,8 @@ class OHLCInput:
     previous_close_kg: float | None = None
     measurements: tuple[WeightMeasurement, ...] = ()
     events: tuple[EnergyEvent, ...] = ()
-    baseline_kcal: float = 0.0
-    calibration_kcal_day: float = 0.0
+    baseline_kj: float = 0.0
+    calibration_kj_day: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "measurements", tuple(self.measurements))
@@ -124,14 +124,14 @@ class OHLCInput:
             if previous <= 0:
                 raise ValueError("previous_close_kg must be greater than zero")
             object.__setattr__(self, "previous_close_kg", previous)
-        baseline = _finite("baseline_kcal", self.baseline_kcal)
+        baseline = _finite("baseline_kj", self.baseline_kj)
         if baseline < 0:
-            raise ValueError("baseline_kcal cannot be negative")
-        object.__setattr__(self, "baseline_kcal", baseline)
+            raise ValueError("baseline_kj cannot be negative")
+        object.__setattr__(self, "baseline_kj", baseline)
         object.__setattr__(
             self,
-            "calibration_kcal_day",
-            _finite("calibration_kcal_day", self.calibration_kcal_day),
+            "calibration_kj_day",
+            _finite("calibration_kj_day", self.calibration_kj_day),
         )
 
 
@@ -153,7 +153,7 @@ class OHLCResult:
     open_source: ValueSource
     close_source: ValueSource
     actual_weight_count: int
-    model_energy_balance_kcal: float
+    model_energy_balance_kj: float
     trajectory: tuple[TrajectoryPoint, ...]
 
     @property
@@ -189,10 +189,10 @@ class OHLCGenerator:
             if event.occurred_at.date() != inputs.day:
                 raise ValueError("all energy events must belong to input day")
 
-        event_energy = sum(event.signed_kcal for event in events)
+        event_energy = sum(event.signed_kj for event in events)
         # δ is extra expenditure, so a positive value is subtracted.
         model_energy = (
-            event_energy - inputs.baseline_kcal - inputs.calibration_kcal_day
+            event_energy - inputs.baseline_kj - inputs.calibration_kj_day
         )
         model_delta = self.weight_model.energy_to_weight_delta(model_energy)
         count = len(measurements)
@@ -219,7 +219,7 @@ class OHLCGenerator:
                 open_source=ValueSource.PREVIOUS_CLOSE,
                 close_source=ValueSource.PREVIOUS_CLOSE,
                 actual_weight_count=0,
-                model_energy_balance_kcal=model_energy,
+                model_energy_balance_kj=model_energy,
                 trajectory=trajectory,
             )
 
@@ -248,8 +248,8 @@ class OHLCGenerator:
             open_kg=open_kg,
             target_close_kg=close_kg,
             events=events,
-            baseline_kcal=inputs.baseline_kcal,
-            calibration_kcal_day=inputs.calibration_kcal_day,
+            baseline_kj=inputs.baseline_kj,
+            calibration_kj_day=inputs.calibration_kj_day,
             day=inputs.day,
         )
         high = max(point.weight_kg for point in trajectory)
@@ -266,7 +266,7 @@ class OHLCGenerator:
             open_source=open_source,
             close_source=close_source,
             actual_weight_count=count,
-            model_energy_balance_kcal=model_energy,
+            model_energy_balance_kj=model_energy,
             trajectory=trajectory,
         )
 
@@ -276,12 +276,12 @@ class OHLCGenerator:
         open_kg: float,
         target_close_kg: float,
         events: list[EnergyEvent],
-        baseline_kcal: float,
-        calibration_kcal_day: float,
+        baseline_kj: float,
+        calibration_kj_day: float,
         day: date,
     ) -> tuple[TrajectoryPoint, ...]:
         start = datetime.combine(day, time.min, tzinfo=(events[0].occurred_at.tzinfo if events else None))
-        continuous_energy = -baseline_kcal - calibration_kcal_day
+        continuous_energy = -baseline_kj - calibration_kj_day
         fraction = 0.0
         weight = open_kg
         raw_points: list[TrajectoryPoint] = [TrajectoryPoint(0.0, weight, "open")]
@@ -294,7 +294,7 @@ class OHLCGenerator:
                 continuous_energy * (event_fraction - fraction)
             )
             raw_points.append(TrajectoryPoint(event_fraction, weight, "before event"))
-            weight += self.weight_model.energy_to_weight_delta(event.signed_kcal)
+            weight += self.weight_model.energy_to_weight_delta(event.signed_kj)
             raw_points.append(
                 TrajectoryPoint(event_fraction, weight, event.name or event.event_type.value)
             )

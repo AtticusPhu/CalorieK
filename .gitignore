@@ -1,33 +1,87 @@
+# Python runtimes, virtual environments and caches
 __pycache__/
 *.py[cod]
-*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.venv/
-.venv-win/
-.python314/
+.tox/
+.nox/
+.venv*/
+venv*/
+env/
+ENV/
+.python*/
 .tools/
-venv/
+*.egg-info/
+
+# Build outputs and bundled binaries (source .spec stays tracked)
 build/
 dist/
+/release/
+/releases/
+*.exe
+*.dll
 *.spec.bak
-data/*.sqlite3
-data/*.sqlite3-*
-data/backups/
-data_location.json
-exports/
 
-# CalorieK local workflow artifacts
-PROJECT_TREE.txt
-GIT_HEAD.txt
-GIT_STATUS.txt
-GIT_DIFF.patch
-GIT_DIFF_CACHED.patch
-GIT_DIFF_STAT.txt
-GIT_INFO.txt
-HANDOFF_INFO.txt
+# Local health data, backups and SQLite sidecars in any custom directory
+/data/*
+!/data/.gitkeep
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*-wal
+*-shm
+*-journal
+backups/
+data_location.json
+data_location.json.tmp
+exports/
+caloriek_export_*.json
+
+# Local configuration/secrets; templates may remain source-controlled
+.env
+.env.*
+!.env.example
+
+# Test reports, coverage and local ChatGPT-generated review runners
 test_results/
+test_results_*/
 chatgpt_test_results/
+chatgpt_test_results_*/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+/TEST_CAL*.bat
+
+# Temporary output; do not exclude all JSON/TXT files or source test scripts
+logs/
+*.log
+*.log.*
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Handoff/release archives and their local metadata
 *.zip
-1.txt
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+CalorieK_handoff_*.sha256.txt
+CalorieK-v*-windows-*.sha256*
+_handoff/
+/PROJECT_TREE.txt
+/GIT_HEAD.txt
+/GIT_STATUS.txt
+/GIT_DIFF.patch
+/GIT_DIFF_CACHED.patch
+/GIT_DIFF_STAT.txt
+/GIT_INFO.txt
+/HANDOFF_INFO.txt
+/1.txt

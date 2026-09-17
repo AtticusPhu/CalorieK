@@ -97,7 +97,7 @@ class RecipeService:
             item_rows = connection.execute(
                 """
                 SELECT ri.*, f.name AS food_name, f.basis_amount, f.basis_unit,
-                       f.kcal, f.protein_g, f.fat_g, f.carb_g, f.fiber_g
+                       f.kj, f.protein_g, f.fat_g, f.carb_g, f.fiber_g
                 FROM recipe_items ri JOIN foods f ON f.id = ri.food_id
                 WHERE ri.recipe_id = ? AND ri.active = 1 ORDER BY ri.id
                 """,
@@ -235,7 +235,7 @@ class RecipeService:
             per_factor = 100.0 / normalization_amount
             totals.update(
                 {
-                    "per_100g_kcal": totals["kcal"] * per_factor,
+                    "per_100g_kj": totals["kj"] * per_factor,
                     "per_100g_protein_g": totals["protein_g"] * per_factor,
                     "per_100g_fat_g": totals["fat_g"] * per_factor,
                     "per_100g_carb_g": totals["carb_g"] * per_factor,
@@ -245,7 +245,7 @@ class RecipeService:
         else:
             totals.update(
                 {
-                    "per_100g_kcal": 0.0,
+                    "per_100g_kj": 0.0,
                     "per_100g_protein_g": 0.0,
                     "per_100g_fat_g": 0.0,
                     "per_100g_carb_g": 0.0,
@@ -284,7 +284,7 @@ class RecipeService:
         rows = connection.execute(
             """
             SELECT ri.amount, ri.unit, f.basis_amount, f.basis_unit,
-                   f.kcal, f.protein_g, f.fat_g, f.carb_g, f.fiber_g
+                   f.kj, f.protein_g, f.fat_g, f.carb_g, f.fiber_g
             FROM recipe_items ri JOIN foods f ON f.id = ri.food_id
             WHERE ri.recipe_id = ? AND ri.active = 1
             ORDER BY ri.id
@@ -294,7 +294,7 @@ class RecipeService:
         if not rows:
             raise ValueError(f"recipe {recipe_id} has no active items")
         totals: dict[str, Any] = {
-            "kcal": 0.0,
+            "kj": 0.0,
             "protein_g": 0.0,
             "fat_g": 0.0,
             "carb_g": 0.0,
@@ -308,7 +308,7 @@ class RecipeService:
                 total_weight_g += float(row["amount"])
             else:
                 total_volume_ml += float(row["amount"])
-            totals["kcal"] += float(row["kcal"]) * factor
+            totals["kj"] += float(row["kj"]) * factor
             totals["protein_g"] += float(row["protein_g"]) * factor
             totals["fat_g"] += float(row["fat_g"]) * factor
             totals["carb_g"] += float(row["carb_g"]) * factor
@@ -333,7 +333,7 @@ class RecipeService:
         with self.db.connection() as connection:
             normalized_items = self._validated_items(connection, items)
             totals: dict[str, Any] = {
-                "kcal": 0.0,
+                "kj": 0.0,
                 "protein_g": 0.0,
                 "fat_g": 0.0,
                 "carb_g": 0.0,
@@ -344,7 +344,7 @@ class RecipeService:
             for food_id, amount, unit in normalized_items:
                 food = connection.execute(
                     """
-                    SELECT basis_amount, kcal, protein_g, fat_g, carb_g, fiber_g
+                    SELECT basis_amount, kj, protein_g, fat_g, carb_g, fiber_g
                     FROM foods WHERE id = ? AND active = 1
                     """,
                     (food_id,),
@@ -356,7 +356,7 @@ class RecipeService:
                     total_weight_g += amount
                 else:
                     total_volume_ml += amount
-                totals["kcal"] += float(food["kcal"]) * factor
+                totals["kj"] += float(food["kj"]) * factor
                 totals["protein_g"] += float(food["protein_g"]) * factor
                 totals["fat_g"] += float(food["fat_g"]) * factor
                 totals["carb_g"] += float(food["carb_g"]) * factor
@@ -428,7 +428,7 @@ class RecipeService:
                 """
                 INSERT INTO intake_events(
                     occurred_at, local_date, source_type, source_id, meal_type,
-                    name_snapshot, amount, unit, kcal_snapshot,
+                    name_snapshot, amount, unit, kj_snapshot,
                     protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
                     note, created_at, updated_at, active
                 ) VALUES (?, ?, 'RECIPE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -441,7 +441,7 @@ class RecipeService:
                     recipe_name,
                     event_amount,
                     event_unit,
-                    totals["kcal"] * ratio,
+                    totals["kj"] * ratio,
                     totals["protein_g"] * ratio,
                     totals["fat_g"] * ratio,
                     totals["carb_g"] * ratio,

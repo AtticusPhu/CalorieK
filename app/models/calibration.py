@@ -12,6 +12,8 @@ from datetime import date, timedelta
 from math import isfinite, sqrt
 from typing import Protocol, Sequence, runtime_checkable
 
+from app.energy_units import KJ_PER_KCAL
+
 from .weight_model import SimpleEnergyWeightModel, WeightModel
 
 
@@ -27,13 +29,13 @@ class CalibrationDay:
     """Daily raw inputs with an optional representative actual weight."""
 
     day: date
-    intake_kcal: float = 0.0
-    baseline_kcal: float = 0.0
-    exercise_kcal: float = 0.0
+    intake_kj: float = 0.0
+    baseline_kj: float = 0.0
+    exercise_kj: float = 0.0
     actual_weight_kg: float | None = None
 
     def __post_init__(self) -> None:
-        for name in ("intake_kcal", "baseline_kcal", "exercise_kcal"):
+        for name in ("intake_kj", "baseline_kj", "exercise_kj"):
             value = _finite(name, getattr(self, name))
             if value < 0:
                 raise ValueError(f"{name} cannot be negative")
@@ -45,8 +47,8 @@ class CalibrationDay:
             object.__setattr__(self, "actual_weight_kg", weight)
 
     @property
-    def uncalibrated_balance_kcal(self) -> float:
-        return self.intake_kcal - self.baseline_kcal - self.exercise_kcal
+    def uncalibrated_balance_kj(self) -> float:
+        return self.intake_kj - self.baseline_kj - self.exercise_kj
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +57,7 @@ class CalibrationResult:
     window_end: date | None
     weight_sample_count: int
     days_span: int
-    calibration_kcal_day: float
+    calibration_kj_day: float
     rmse_kg: float | None
     model_version: str
     trend_model_version: str
@@ -124,20 +126,20 @@ class GridSearchCalibrationEngine:
 
     weight_model: WeightModel = SimpleEnergyWeightModel()
     trend_model: WeightTrendModel = EWMAWeightTrend()
-    minimum_kcal_day: float = -600.0
-    maximum_kcal_day: float = 600.0
-    step_kcal_day: float = 1.0
+    minimum_kj_day: float = -2510.4
+    maximum_kj_day: float = 2510.4
+    step_kj_day: float = KJ_PER_KCAL
     maximum_window_days: int = 30
     model_version: str = "grid-calibration-v2"
 
     def __post_init__(self) -> None:
-        self.minimum_kcal_day = _finite("minimum_kcal_day", self.minimum_kcal_day)
-        self.maximum_kcal_day = _finite("maximum_kcal_day", self.maximum_kcal_day)
-        self.step_kcal_day = _finite("step_kcal_day", self.step_kcal_day)
-        if self.minimum_kcal_day > self.maximum_kcal_day:
-            raise ValueError("minimum_kcal_day cannot exceed maximum_kcal_day")
-        if self.step_kcal_day <= 0:
-            raise ValueError("step_kcal_day must be greater than zero")
+        self.minimum_kj_day = _finite("minimum_kj_day", self.minimum_kj_day)
+        self.maximum_kj_day = _finite("maximum_kj_day", self.maximum_kj_day)
+        self.step_kj_day = _finite("step_kj_day", self.step_kj_day)
+        if self.minimum_kj_day > self.maximum_kj_day:
+            raise ValueError("minimum_kj_day cannot exceed maximum_kj_day")
+        if self.step_kj_day <= 0:
+            raise ValueError("step_kj_day must be greater than zero")
         if self.maximum_window_days < 1 or self.maximum_window_days > 30:
             raise ValueError("maximum_window_days must be between 1 and 30")
 
@@ -211,13 +213,13 @@ class GridSearchCalibrationEngine:
         candidates: list[float] = []
         count = int(
             round(
-                (self.maximum_kcal_day - self.minimum_kcal_day)
-                / self.step_kcal_day
+                (self.maximum_kj_day - self.minimum_kj_day)
+                / self.step_kj_day
             )
         )
         for index in range(count + 1):
-            value = self.minimum_kcal_day + index * self.step_kcal_day
-            if value <= self.maximum_kcal_day + 1e-9:
+            value = self.minimum_kj_day + index * self.step_kj_day
+            if value <= self.maximum_kj_day + 1e-9:
                 candidates.append(value)
         if not any(abs(value) < 1e-12 for value in candidates):
             candidates.append(0.0)
@@ -233,7 +235,7 @@ class GridSearchCalibrationEngine:
                 while cursor <= observation.day:
                     daily = by_date.get(cursor)
                     if daily is not None:
-                        cumulative_energy += daily.uncalibrated_balance_kcal
+                        cumulative_energy += daily.uncalibrated_balance_kj
                     cursor += timedelta(days=1)
                 # Positive δ is extra burn on every elapsed natural day.
                 predicted = anchor_weight + self.weight_model.energy_to_weight_delta(
@@ -252,7 +254,7 @@ class GridSearchCalibrationEngine:
             window_end=window_end,
             weight_sample_count=sample_count,
             days_span=days_span,
-            calibration_kcal_day=best_delta,
+            calibration_kj_day=best_delta,
             rmse_kg=best_rmse,
             model_version=self.model_version,
             trend_model_version=self.trend_model.model_version,
@@ -274,7 +276,7 @@ class GridSearchCalibrationEngine:
             window_end=window_end,
             weight_sample_count=sample_count,
             days_span=days_span,
-            calibration_kcal_day=0.0,
+            calibration_kj_day=0.0,
             rmse_kg=None,
             model_version=self.model_version,
             trend_model_version=self.trend_model.model_version,

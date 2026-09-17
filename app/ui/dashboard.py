@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from app.charts.candlestick import CandlePoint, CandlestickChart
 from app.charts.treemap import TreemapItem, TreemapWidget
+from app.energy_units import EnergyUnit, energy_unit_label, format_energy, normalize_energy_unit
 
 from .context import DashboardDTO, UIContext
 from .exercise_dialog import ExerciseDialog
@@ -67,6 +68,8 @@ class DashboardPage(QWidget):
         super().__init__(parent)
         self._context = context
         self._loaded = False
+        self._display_unit: EnergyUnit = "kj"
+        self._last_dashboard: DashboardDTO | None = None
         self.setObjectName("appRoot")
         self.setAccessibleName("首页仪表盘")
 
@@ -109,9 +112,9 @@ class DashboardPage(QWidget):
 
         candle_title = QLabel("体重日 K 线")
         candle_title.setObjectName("sectionTitle")
-        candle_helper = QLabel("纵轴固定为 kg；横杠表示当天没有实际称重，悬停可查看 OHLC 与热量。")
-        candle_helper.setObjectName("muted")
-        candle_helper.setWordWrap(True)
+        self.candle_helper = QLabel("纵轴固定为 kg；横杠表示当天没有实际称重，悬停可查看 OHLC 与热量（kJ）。")
+        self.candle_helper.setObjectName("muted")
+        self.candle_helper.setWordWrap(True)
         self.candlestick_chart = CandlestickChart()
 
         candle_card = QFrame()
@@ -120,14 +123,14 @@ class DashboardPage(QWidget):
         candle_layout.setContentsMargins(16, 16, 16, 16)
         candle_layout.setSpacing(8)
         candle_layout.addWidget(candle_title)
-        candle_layout.addWidget(candle_helper)
+        candle_layout.addWidget(self.candle_helper)
         candle_layout.addWidget(self.candlestick_chart, 1)
 
-        treemap_title = QLabel("今日 kcal 构成")
-        treemap_title.setObjectName("sectionTitle")
-        treemap_helper = QLabel("方块面积按每个摄入或消耗项目的 |kcal| 计算，不表示发生时间。")
-        treemap_helper.setObjectName("muted")
-        treemap_helper.setWordWrap(True)
+        self.treemap_title = QLabel("今日 kJ 构成")
+        self.treemap_title.setObjectName("sectionTitle")
+        self.treemap_helper = QLabel("方块面积按每个摄入或消耗项目的绝对能量成比例；显示 kJ，不表示发生时间。")
+        self.treemap_helper.setObjectName("muted")
+        self.treemap_helper.setWordWrap(True)
         self.treemap = TreemapWidget()
 
         treemap_card = QFrame()
@@ -135,8 +138,8 @@ class DashboardPage(QWidget):
         treemap_layout = QVBoxLayout(treemap_card)
         treemap_layout.setContentsMargins(16, 16, 16, 16)
         treemap_layout.setSpacing(8)
-        treemap_layout.addWidget(treemap_title)
-        treemap_layout.addWidget(treemap_helper)
+        treemap_layout.addWidget(self.treemap_title)
+        treemap_layout.addWidget(self.treemap_helper)
         treemap_layout.addWidget(self.treemap, 1)
 
         scroll_body = QWidget()
@@ -192,6 +195,7 @@ class DashboardPage(QWidget):
         try:
             dashboard = self._context.get_dashboard()
             settings = self._context.get_settings()
+            display_unit = self._context.get_energy_display_unit()
         except Exception as exc:
             self.as_of_label.setText("数据读取失败，可点击刷新重试")
             self.setAccessibleDescription(f"首页数据读取失败：{exc}")
@@ -199,12 +203,39 @@ class DashboardPage(QWidget):
                 QMessageBox.warning(self, "首页未刷新", f"无法读取首页数据。\n\n{exc}")
             return
 
+        self._apply_display_unit(display_unit)
         self._render(dashboard)
         self.candlestick_chart.set_color_mode(settings.candle_color_mode)
         self.treemap.set_color_mode(settings.treemap_color_mode)
         self._loaded = True
 
+    def refresh_display_unit(self) -> None:
+        """Apply display preferences to the cached snapshot without model work."""
+
+        settings = self._context.get_settings()
+        self._apply_display_unit(self._context.get_energy_display_unit())
+        if self._last_dashboard is not None:
+            self._render(self._last_dashboard)
+        self.candlestick_chart.set_color_mode(settings.candle_color_mode)
+        self.treemap.set_color_mode(settings.treemap_color_mode)
+
+    def _apply_display_unit(self, unit: str) -> None:
+        self._display_unit = normalize_energy_unit(unit)
+        label = energy_unit_label(self._display_unit)
+        self.candle_helper.setText(
+            "纵轴固定为 kg；横杠表示当天没有实际称重，"
+            f"悬停可查看 OHLC 与热量（{label}）。"
+        )
+        self.treemap_title.setText(f"今日 {label} 构成")
+        self.treemap_helper.setText(
+            "方块面积按每个摄入或消耗项目的绝对能量成比例；"
+            f"显示 {label}，不表示发生时间。"
+        )
+        self.candlestick_chart.set_display_unit(self._display_unit)
+        self.treemap.set_display_unit(self._display_unit)
+
     def _render(self, dashboard: DashboardDTO) -> None:
+        self._last_dashboard = dashboard
         as_of = dashboard.as_of
         self.as_of_label.setText(f"截至 {as_of:%Y-%m-%d %H:%M}")
 
@@ -227,16 +258,20 @@ class DashboardPage(QWidget):
         else:
             self.change_card.set_metric(
                 f"{dashboard.predicted_change_kg:+.2f} kg",
-                f"个人校准 {dashboard.calibration_kcal_day:+.0f} kcal/日",
+                f"个人校准 {format_energy(dashboard.calibration_kj_day, self._display_unit, signed=True)}/日",
             )
 
-        self.intake_card.set_metric(f"{dashboard.intake_kcal:.0f} kcal")
+        self.intake_card.set_metric(format_energy(dashboard.intake_kj, self._display_unit))
         self.burn_card.set_metric(
-            f"{dashboard.total_burn_kcal:.0f} kcal",
-            f"基础/日常 {dashboard.baseline_kcal:.0f} · 运动 {dashboard.exercise_kcal:.0f}",
+            format_energy(dashboard.total_burn_kj, self._display_unit),
+            f"基础/日常 {format_energy(dashboard.baseline_kj, self._display_unit)} · "
+            f"运动 {format_energy(dashboard.exercise_kj, self._display_unit)}",
         )
-        balance_description = "热量盈余" if dashboard.balance_kcal > 0 else "热量赤字" if dashboard.balance_kcal < 0 else "收支平衡"
-        self.balance_card.set_metric(f"{dashboard.balance_kcal:+.0f} kcal", balance_description)
+        balance_description = "热量盈余" if dashboard.balance_kj > 0 else "热量赤字" if dashboard.balance_kj < 0 else "收支平衡"
+        self.balance_card.set_metric(
+            format_energy(dashboard.balance_kj, self._display_unit, signed=True),
+            balance_description,
+        )
 
         candles = tuple(
             CandlePoint(
@@ -245,9 +280,9 @@ class DashboardPage(QWidget):
                 high_kg=item.high_kg,
                 low_kg=item.low_kg,
                 close_kg=item.close_kg,
-                intake_kcal=item.intake_kcal,
-                burn_kcal=item.burn_kcal,
-                balance_kcal=item.balance_kcal,
+                intake_kj=item.intake_kj,
+                burn_kj=item.burn_kj,
+                balance_kj=item.balance_kj,
                 actual_weight_count=item.actual_weight_count,
                 open_source=item.open_source,
                 close_source=item.close_source,
@@ -260,7 +295,7 @@ class DashboardPage(QWidget):
             TreemapItem(
                 key=item.key,
                 name=item.name,
-                kcal=item.kcal,
+                kj=item.kj,
                 side=item.side,
                 category=item.category,
                 protein_g=item.protein_g,
@@ -273,9 +308,9 @@ class DashboardPage(QWidget):
         )
         self.treemap.set_data(items)
         self.setAccessibleDescription(
-            f"今日摄入 {dashboard.intake_kcal:.0f} 千卡，"
-            f"消耗 {dashboard.total_burn_kcal:.0f} 千卡，"
-            f"余额 {dashboard.balance_kcal:+.0f} 千卡"
+            f"今日摄入 {format_energy(dashboard.intake_kj, self._display_unit)}，"
+            f"消耗 {format_energy(dashboard.total_burn_kj, self._display_unit)}，"
+            f"余额 {format_energy(dashboard.balance_kj, self._display_unit, signed=True)}"
         )
 
     @staticmethod

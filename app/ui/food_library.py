@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
 )
 
 from .context import FoodDTO, FoodDraft, UIContext
+from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
+from app.energy_units import energy_to_display, energy_unit_label, kcal_to_kj
 
 
 class FoodEditorDialog(QDialog):
@@ -39,6 +41,7 @@ class FoodEditorDialog(QDialog):
         super().__init__(parent)
         self._context = context
         self._food = food
+        self._energy_unit = context.get_energy_display_unit()
         self.saved_food: FoodDTO | None = None
         self.setWindowTitle("编辑食品" if food else "新建食品")
         self.setMinimumWidth(540)
@@ -70,7 +73,7 @@ class FoodEditorDialog(QDialog):
         self.brand_edit.setPlaceholderText("可选")
         form.addRow("品牌", self.brand_edit)
 
-        self.basis_amount_spin = self._number_spin(1.0, 100000.0, 1, food.basis_amount if food else 100.0)
+        self.basis_amount_spin = self._number_spin(1.0, 100000.0, 2, food.basis_amount if food else 100.0)
         self.basis_unit_combo = QComboBox()
         self.basis_unit_combo.addItem("克 (g)", "g")
         self.basis_unit_combo.addItem("毫升 (ml)", "ml")
@@ -85,12 +88,17 @@ class FoodEditorDialog(QDialog):
         basis_layout.addWidget(self.basis_unit_combo)
         form.addRow("营养基准 *", basis_row)
 
-        self.kcal_spin = self._number_spin(0.0, 100000.0, 1, food.kcal if food else 0.0, " kcal")
+        self.energy_spin = EnergySpinBox(unit=self._energy_unit)
+        self.energy_spin.set_kj_range(0.0, kcal_to_kj(100000.0))
+        self.energy_spin.set_energy_kj(food.kj if food else 0.0)
+        self.energy_spin.setAccessibleName(
+            f"食品能量（{energy_unit_label(self._energy_unit)}）"
+        )
         self.protein_spin = self._number_spin(0.0, 10000.0, 2, food.protein_g if food else 0.0, " g")
         self.fat_spin = self._number_spin(0.0, 10000.0, 2, food.fat_g if food else 0.0, " g")
         self.carb_spin = self._number_spin(0.0, 10000.0, 2, food.carb_g if food else 0.0, " g")
         self.fiber_spin = self._number_spin(0.0, 10000.0, 2, food.fiber_g if food else 0.0, " g")
-        form.addRow("热量 *", self.kcal_spin)
+        form.addRow("能量 *", self.energy_spin)
         form.addRow("蛋白质", self.protein_spin)
         form.addRow("脂肪", self.fat_spin)
         form.addRow("碳水", self.carb_spin)
@@ -99,7 +107,7 @@ class FoodEditorDialog(QDialog):
         self.serving_spin = self._number_spin(
             0.1,
             100000.0,
-            1,
+            2,
             food.default_serving if food else 100.0,
         )
         form.addRow("默认份量 *", self.serving_spin)
@@ -140,7 +148,7 @@ class FoodEditorDialog(QDialog):
         value: float,
         suffix: str = "",
     ) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
+        spin = PreciseDoubleSpinBox()
         spin.setRange(minimum, maximum)
         spin.setDecimals(decimals)
         spin.setValue(value)
@@ -167,7 +175,7 @@ class FoodEditorDialog(QDialog):
             brand=self.brand_edit.text().strip(),
             basis_amount=self.basis_amount_spin.value(),
             basis_unit=str(self.basis_unit_combo.currentData()),  # type: ignore[arg-type]
-            kcal=self.kcal_spin.value(),
+            kj=self.energy_spin.energy_kj(),
             protein_g=self.protein_spin.value(),
             fat_g=self.fat_spin.value(),
             carb_g=self.carb_spin.value(),
@@ -196,7 +204,7 @@ class FoodLibraryPage(QWidget):
         "分类",
         "品牌",
         "基准",
-        "kcal",
+        "能量",
         "蛋白质",
         "脂肪",
         "碳水",
@@ -208,6 +216,7 @@ class FoodLibraryPage(QWidget):
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._context = context
+        self._energy_unit = context.get_energy_display_unit()
         self._loaded = False
         self.setObjectName("appRoot")
         self.setAccessibleName("食品库")
@@ -286,6 +295,7 @@ class FoodLibraryPage(QWidget):
 
     def refresh(self) -> None:
         try:
+            self._energy_unit = self._context.get_energy_display_unit()
             foods = self._context.list_foods(
                 self.search_edit.text().strip(),
                 include_inactive=self.include_inactive.isChecked(),
@@ -295,6 +305,9 @@ class FoodLibraryPage(QWidget):
             return
 
         self.table.setSortingEnabled(False)
+        columns = list(self._COLUMNS)
+        columns[4] = f"能量（{energy_unit_label(self._energy_unit)}）"
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(0)
         for food in foods:
             row = self.table.rowCount()
@@ -303,12 +316,12 @@ class FoodLibraryPage(QWidget):
                 food.name,
                 food.category,
                 food.brand or "—",
-                f"{food.basis_amount:g} {food.basis_unit}",
-                f"{food.kcal:.1f}",
-                f"{food.protein_g:.1f} g",
-                f"{food.fat_g:.1f} g",
-                f"{food.carb_g:.1f} g",
-                f"{food.fiber_g:.1f} g",
+                f"{food.basis_amount:.2f} {food.basis_unit}",
+                f"{energy_to_display(food.kj, self._energy_unit):.2f}",
+                f"{food.protein_g:.2f} g",
+                f"{food.fat_g:.2f} g",
+                f"{food.carb_g:.2f} g",
+                f"{food.fiber_g:.2f} g",
                 "是" if food.is_favorite else "否",
                 "正常" if food.active else "已停用",
             )
@@ -382,7 +395,7 @@ class FoodLibraryPage(QWidget):
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
-        if not self._loaded:
+        if not self._loaded or self._energy_unit != self._context.get_energy_display_unit():
             self.refresh()
 
 

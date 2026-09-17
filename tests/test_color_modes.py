@@ -15,7 +15,7 @@ class ColorModeTests(unittest.TestCase):
                 measurements=(
                     WeightMeasurement(datetime(2026, 8, 25, 7, 30), 70.0),
                 ),
-                baseline_kcal=1800,
+                baseline_kj=7531.2,
             )
         )
         values_before = (
@@ -46,4 +46,3 @@ class ColorModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

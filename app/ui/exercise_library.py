@@ -1,4 +1,4 @@
-"""Editable exercise shortcut library for fast Active Calories entry."""
+"""Editable exercise shortcut library for fast active-energy entry."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -24,6 +23,8 @@ from PySide6.QtWidgets import (
 )
 
 from .context import ExerciseTypeDTO, ExerciseTypeDraft, UIContext
+from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
+from app.energy_units import energy_unit_label, format_energy, kcal_to_kj
 
 
 class ExerciseTypeEditorDialog(QDialog):
@@ -38,6 +39,7 @@ class ExerciseTypeEditorDialog(QDialog):
         super().__init__(parent)
         self._context = context
         self._exercise = exercise
+        self._energy_unit = context.get_energy_display_unit()
         self.saved_exercise: ExerciseTypeDTO | None = None
         self.setWindowTitle("编辑运动项目" if exercise else "新建运动项目")
         self.setMinimumWidth(500)
@@ -46,7 +48,7 @@ class ExerciseTypeEditorDialog(QDialog):
         title = QLabel(self.windowTitle())
         title.setObjectName("pageTitle")
         helper = QLabel(
-            "这里只维护快速录入的默认值；每次实际运动仍可单独修改时长和 Active Calories。"
+            "这里只维护快速录入的默认值；每次实际运动仍可单独修改时长和额外运动消耗。"
         )
         helper.setObjectName("muted")
         helper.setWordWrap(True)
@@ -60,7 +62,7 @@ class ExerciseTypeEditorDialog(QDialog):
         self.name_edit.setAccessibleName("运动项目名称")
         form.addRow("项目名称 *", self.name_edit)
 
-        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin = PreciseDoubleSpinBox()
         self.duration_spin.setRange(1.0, 1440.0)
         self.duration_spin.setDecimals(0)
         self.duration_spin.setSuffix(" min")
@@ -70,22 +72,22 @@ class ExerciseTypeEditorDialog(QDialog):
         self.duration_spin.setAccessibleName("默认运动时长")
         form.addRow("默认时长 *", self.duration_spin)
 
-        self.kcal_spin = QDoubleSpinBox()
-        self.kcal_spin.setRange(0.0, 10000.0)
-        self.kcal_spin.setDecimals(0)
-        self.kcal_spin.setSuffix(" kcal")
-        self.kcal_spin.setValue(
-            exercise.default_active_kcal if exercise else 0.0
+        self.energy_spin = EnergySpinBox(unit=self._energy_unit)
+        self.energy_spin.set_kj_range(0.0, kcal_to_kj(10000.0))
+        self.energy_spin.set_energy_kj(
+            exercise.default_active_kj if exercise else 0.0
         )
-        self.kcal_spin.setAccessibleName("默认 Active Calories")
-        form.addRow("默认 Active Calories", self.kcal_spin)
+        self.energy_spin.setAccessibleName(
+            f"默认额外运动消耗（{energy_unit_label(self._energy_unit)}）"
+        )
+        form.addRow("默认额外运动消耗", self.energy_spin)
 
         self.favorite_check = QCheckBox("加入收藏，运动录入时优先显示")
         self.favorite_check.setChecked(exercise.favorite if exercise else False)
         form.addRow("收藏", self.favorite_check)
 
         note = QLabel(
-            "Active Calories 是额外运动消耗，不包含程序已经计算的基础/日常消耗。"
+            "额外运动消耗不包含程序已经计算的基础/日常消耗。"
         )
         note.setObjectName("muted")
         note.setWordWrap(True)
@@ -123,7 +125,7 @@ class ExerciseTypeEditorDialog(QDialog):
             ),
             name=name,
             default_duration_min=self.duration_spin.value(),
-            default_active_kcal=self.kcal_spin.value(),
+            default_active_kj=self.energy_spin.energy_kj(),
             favorite=self.favorite_check.isChecked(),
         )
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
@@ -149,9 +151,9 @@ class ExerciseLibraryPage(QWidget):
     _COLUMNS = (
         "项目",
         "默认时长",
-        "默认 Active Calories",
+        "默认额外运动消耗",
         "最近时长",
-        "最近 kcal",
+        "最近额外运动消耗",
         "收藏",
         "状态",
     )
@@ -159,6 +161,7 @@ class ExerciseLibraryPage(QWidget):
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._context = context
+        self._energy_unit = context.get_energy_display_unit()
         self._loaded = False
         self.setObjectName("appRoot")
         self.setAccessibleName("运动项目库")
@@ -166,7 +169,7 @@ class ExerciseLibraryPage(QWidget):
         title = QLabel("运动项目")
         title.setObjectName("pageTitle")
         helper = QLabel(
-            "维护运动快捷项目及默认值。历史运动事件保存名称、时长和 kcal 快照，不受这里后续修改影响。"
+            "维护运动快捷项目及默认值。历史运动事件保存名称、时长和能量快照，不受这里后续修改影响。"
         )
         helper.setObjectName("muted")
         helper.setWordWrap(True)
@@ -239,6 +242,7 @@ class ExerciseLibraryPage(QWidget):
 
     def refresh(self) -> None:
         try:
+            self._energy_unit = self._context.get_energy_display_unit()
             exercises = self._context.list_exercise_shortcuts(
                 query=self.search_edit.text().strip(),
                 include_inactive=self.include_inactive.isChecked(),
@@ -250,6 +254,11 @@ class ExerciseLibraryPage(QWidget):
             return
 
         self.table.setSortingEnabled(False)
+        columns = list(self._COLUMNS)
+        label = energy_unit_label(self._energy_unit)
+        columns[2] = f"默认额外运动消耗（{label}）"
+        columns[4] = f"最近额外运动消耗（{label}）"
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(0)
         for exercise in exercises:
             row = self.table.rowCount()
@@ -257,15 +266,15 @@ class ExerciseLibraryPage(QWidget):
             values = (
                 exercise.name,
                 f"{exercise.default_duration_min:.0f} min",
-                f"{exercise.default_active_kcal:.0f} kcal",
+                format_energy(exercise.default_active_kj, self._energy_unit),
                 (
                     f"{exercise.last_duration_min:.0f} min"
                     if exercise.last_duration_min is not None
                     else "—"
                 ),
                 (
-                    f"{exercise.last_active_kcal:.0f} kcal"
-                    if exercise.last_active_kcal is not None
+                    format_energy(exercise.last_active_kj, self._energy_unit)
+                    if exercise.last_active_kj is not None
                     else "—"
                 ),
                 "是" if exercise.favorite else "否",
@@ -353,7 +362,7 @@ class ExerciseLibraryPage(QWidget):
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
-        if not self._loaded:
+        if not self._loaded or self._energy_unit != self._context.get_energy_display_unit():
             self.refresh()
 
 

@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QApplication
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +27,82 @@ class ThemeTokens:
 
 
 TOKENS = ThemeTokens()
+
+
+def light_palette(tokens: ThemeTokens = TOKENS) -> QPalette:
+    """Build every native-control color from light tokens, not the OS palette."""
+
+    from PySide6.QtGui import QColor, QPalette
+
+    palette = QPalette()
+    roles = {
+        QPalette.ColorRole.Window: tokens.background,
+        QPalette.ColorRole.WindowText: tokens.text,
+        QPalette.ColorRole.Base: tokens.surface,
+        QPalette.ColorRole.AlternateBase: tokens.surface_alt,
+        QPalette.ColorRole.Text: tokens.text,
+        QPalette.ColorRole.Button: tokens.surface,
+        QPalette.ColorRole.ButtonText: tokens.text,
+        QPalette.ColorRole.BrightText: tokens.surface,
+        QPalette.ColorRole.Light: tokens.surface,
+        QPalette.ColorRole.Midlight: tokens.surface_alt,
+        QPalette.ColorRole.Mid: tokens.border,
+        QPalette.ColorRole.Dark: tokens.text_muted,
+        QPalette.ColorRole.Shadow: tokens.text,
+        QPalette.ColorRole.Highlight: tokens.primary,
+        QPalette.ColorRole.HighlightedText: tokens.surface,
+        QPalette.ColorRole.Link: tokens.primary,
+        QPalette.ColorRole.LinkVisited: tokens.primary_hover,
+        QPalette.ColorRole.ToolTipBase: tokens.surface,
+        QPalette.ColorRole.ToolTipText: tokens.text,
+        QPalette.ColorRole.PlaceholderText: tokens.text_muted,
+        QPalette.ColorRole.Accent: tokens.primary,
+    }
+    for group in (
+        QPalette.ColorGroup.Active,
+        QPalette.ColorGroup.Inactive,
+        QPalette.ColorGroup.Disabled,
+    ):
+        for role, color in roles.items():
+            palette.setColor(group, role, QColor(color))
+    for role in (
+        QPalette.ColorRole.WindowText,
+        QPalette.ColorRole.Text,
+        QPalette.ColorRole.ButtonText,
+    ):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(tokens.text_muted))
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, QColor(tokens.surface_alt)
+    )
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button, QColor(tokens.surface_alt)
+    )
+    return palette
+
+
+def apply_light_theme(application: QApplication, tokens: ThemeTokens = TOKENS) -> None:
+    """Apply before any dialog is created, including startup/profile dialogs.
+
+    Fusion's native glyphs use this explicit palette. An application-wide sheet
+    also reaches separate popup windows; styling only MainWindow cannot do that.
+    """
+
+    from PySide6.QtCore import Qt
+
+    stylesheet = application_stylesheet(tokens)
+    palette = light_palette(tokens)
+    if (
+        getattr(application, "_caloriek_light_theme_tokens", None) == tokens
+        and application.styleHints().colorScheme() == Qt.ColorScheme.Light
+        and application.styleSheet() == stylesheet
+        and application.palette() == palette
+    ):
+        return
+    application.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    application.setStyle("Fusion")
+    application.setPalette(palette)
+    application.setStyleSheet(stylesheet)
+    application._caloriek_light_theme_tokens = tokens
 
 
 def application_stylesheet(tokens: ThemeTokens = TOKENS) -> str:
@@ -127,7 +208,33 @@ def application_stylesheet(tokens: ThemeTokens = TOKENS) -> str:
         border-radius: 6px;
         background: {tokens.surface};
         selection-background-color: {tokens.primary};
+        selection-color: {tokens.surface};
     }}
+    QLineEdit:disabled, QComboBox:disabled, QAbstractSpinBox:disabled,
+    QTextEdit:disabled, QPlainTextEdit:disabled {{
+        color: {tokens.text_muted};
+        background: {tokens.surface_alt};
+    }}
+    QComboBox::drop-down, QDateEdit::drop-down, QDateTimeEdit::drop-down {{
+        background: {tokens.surface_alt};
+        border-left: 1px solid {tokens.border};
+        width: 22px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {tokens.surface};
+        color: {tokens.text};
+        border: 1px solid {tokens.border};
+        selection-background-color: {tokens.primary_soft};
+        selection-color: {tokens.text};
+    }}
+    QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
+        background: {tokens.surface_alt};
+        border-left: 1px solid {tokens.border};
+        width: 18px;
+    }}
+    QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover,
+    QComboBox::drop-down:hover, QDateEdit::drop-down:hover,
+    QDateTimeEdit::drop-down:hover {{ background: {tokens.primary_soft}; }}
     QLineEdit[invalid="true"], QDoubleSpinBox[invalid="true"] {{
         border: 2px solid {tokens.danger};
     }}
@@ -148,6 +255,73 @@ def application_stylesheet(tokens: ThemeTokens = TOKENS) -> str:
         padding: 8px;
         font-weight: 600;
     }}
+    QTableCornerButton::section {{
+        background: {tokens.surface_alt};
+        border: none;
+        border-right: 1px solid {tokens.border};
+        border-bottom: 1px solid {tokens.border};
+    }}
+    QTableView::item:selected, QListView::item:selected {{
+        background: {tokens.primary_soft};
+        color: {tokens.text};
+    }}
+    QMenu, QMenuBar {{
+        background: {tokens.surface};
+        color: {tokens.text};
+    }}
+    QMenu {{ border: 1px solid {tokens.border}; padding: 4px; }}
+    QMenu::item {{ padding: 6px 24px; }}
+    QMenu::item:selected, QMenuBar::item:selected {{
+        background: {tokens.primary_soft};
+        color: {tokens.text};
+    }}
+    QMenu::item:disabled {{ color: {tokens.text_muted}; }}
+    QMenu::separator {{ height: 1px; background: {tokens.border}; margin: 4px; }}
+    QCalendarWidget {{
+        qproperty-gridVisible: true;
+        background: {tokens.surface};
+        color: {tokens.text};
+    }}
+    QCalendarWidget QWidget#qt_calendar_navigationbar {{
+        background: {tokens.surface_alt};
+        color: {tokens.text};
+    }}
+    QCalendarWidget QToolButton {{
+        min-height: 24px;
+        padding: 3px 6px;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        background: {tokens.surface_alt};
+        color: {tokens.text};
+    }}
+    QCalendarWidget QToolButton:hover {{
+        background: {tokens.primary_soft};
+        border-color: {tokens.primary};
+    }}
+    QCalendarWidget QToolButton:disabled {{ color: {tokens.text_muted}; }}
+    QCalendarWidget QToolButton:focus {{ border: 2px solid {tokens.focus}; }}
+    QCalendarWidget QSpinBox {{
+        min-height: 24px;
+        padding: 1px 4px;
+        background: {tokens.surface};
+        color: {tokens.text};
+        selection-background-color: {tokens.primary};
+        selection-color: {tokens.surface};
+    }}
+    QCalendarWidget QAbstractItemView {{
+        background: {tokens.surface};
+        alternate-background-color: {tokens.surface_alt};
+        color: {tokens.text};
+        border: none;
+        border-radius: 0;
+        gridline-color: {tokens.border};
+        selection-background-color: {tokens.primary};
+        selection-color: {tokens.surface};
+    }}
+    QCalendarWidget QAbstractItemView::item:selected {{
+        background: {tokens.primary};
+        color: {tokens.surface};
+    }}
     QListWidget::item {{ min-height: 34px; padding: 4px 8px; }}
     QListWidget::item:selected {{ border-left: 3px solid {tokens.primary}; }}
     QTabWidget::pane {{ border: 1px solid {tokens.border}; border-radius: 7px; }}
@@ -167,4 +341,6 @@ def application_stylesheet(tokens: ThemeTokens = TOKENS) -> str:
     """
 
 
-__all__ = ["TOKENS", "ThemeTokens", "application_stylesheet"]
+__all__ = [
+    "TOKENS", "ThemeTokens", "apply_light_theme", "application_stylesheet", "light_palette"
+]

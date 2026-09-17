@@ -7,6 +7,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QDialog,
     QFrame,
@@ -21,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.version import APP_DISPLAY_NAME
+
 from .context import UIContext
 from .dashboard import DashboardPage
 from .food_library import FoodLibraryPage
@@ -28,7 +31,7 @@ from .exercise_library import ExerciseLibraryPage
 from .profile_dialog import ProfileDialog
 from .recipe_editor import RecipeLibraryPage
 from .settings import SettingsPage
-from .theme import application_stylesheet
+from .theme import apply_light_theme
 
 
 def ensure_initial_profile(context: UIContext, parent: QWidget | None = None) -> bool:
@@ -38,6 +41,9 @@ def ensure_initial_profile(context: UIContext, parent: QWidget | None = None) ->
     means the user cancelled setup or the profile state could not be read.
     """
 
+    application = QApplication.instance()
+    if application is not None:
+        apply_light_theme(application)
     try:
         if context.has_profile():
             return True
@@ -46,7 +52,6 @@ def ensure_initial_profile(context: UIContext, parent: QWidget | None = None) ->
         return False
 
     dialog = ProfileDialog(context, parent)
-    dialog.setStyleSheet(application_stylesheet())
     return dialog.exec() == QDialog.DialogCode.Accepted
 
 
@@ -66,17 +71,19 @@ class MainWindow(QMainWindow):
         ensure_profile_on_show: bool = True,
     ) -> None:
         super().__init__(parent)
+        application = QApplication.instance()
+        if application is not None:
+            apply_light_theme(application)
         self._context = context
         self._ensure_profile_on_show = ensure_profile_on_show
         self._bootstrapped = False
         self._page_indexes: dict[str, int] = {}
         self._nav_buttons: dict[str, QPushButton] = {}
 
-        self.setWindowTitle("CalorieK · 体重热量 K 线")
+        self.setWindowTitle(APP_DISPLAY_NAME)
         self.setMinimumSize(980, 700)
         self.resize(1240, 840)
         self.setAccessibleName("CalorieK 主窗口")
-        self.setStyleSheet(application_stylesheet())
 
         self.dashboard_page = DashboardPage(context)
         self.food_library_page = FoodLibraryPage(context)
@@ -224,9 +231,14 @@ class MainWindow(QMainWindow):
     def _exercise_library_changed(self) -> None:
         self.statusBar().showMessage("运动快捷项目已更新；历史运动记录未改变。", 5000)
 
-    def _settings_changed(self) -> None:
-        self.dashboard_page.refresh()
-        self.statusBar().showMessage("设置已保存，图表与预测已刷新。", 5000)
+    def _settings_changed(self, model_changed: bool) -> None:
+        if model_changed:
+            self.dashboard_page.refresh()
+        else:
+            self.dashboard_page.refresh_display_unit()
+        for page in (self.food_library_page, self.recipe_library_page, self.exercise_library_page):
+            page.refresh()
+        self.statusBar().showMessage("设置已保存，所有页面的显示单位与图表已更新。", 5000)
 
     def _bootstrap(self) -> None:
         if self._bootstrapped:

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from app.energy_units import format_energy
+from .numeric_input import PreciseDoubleSpinBox
+
 from typing import cast
 
 from PySide6.QtCore import QDateTime, QTimer, Qt
@@ -10,7 +13,6 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QLineEdit,
@@ -48,6 +50,7 @@ class FoodDialog(QDialog):
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._context = context
+        self._energy_unit = context.get_energy_display_unit()
         self._selected: IntakeSourceDTO | None = None
         self.setWindowTitle("记录饮食")
         self.setMinimumSize(620, 650)
@@ -119,9 +122,9 @@ class FoodDialog(QDialog):
         self.meal_combo.setAccessibleName("餐次分类")
         form.addRow("餐次", self.meal_combo)
 
-        self.amount_spin = QDoubleSpinBox()
+        self.amount_spin = PreciseDoubleSpinBox()
         self.amount_spin.setRange(0.1, 100000.0)
-        self.amount_spin.setDecimals(1)
+        self.amount_spin.setDecimals(2)
         self.amount_spin.setValue(100.0)
         self.amount_spin.setAccessibleName("摄入份量")
         form.addRow("份量 *", self.amount_spin)
@@ -221,8 +224,8 @@ class FoodDialog(QDialog):
         kind = "食谱" if selected.source_type == "recipe" else "食品"
         self.selected_label.setText(f"{selected.name} · {kind}")
         nutrition = []
-        if selected.kcal_reference is not None:
-            nutrition.append(f"{selected.kcal_reference:.0f} kcal")
+        if selected.kj_reference is not None:
+            nutrition.append(format_energy(selected.kj_reference, self._energy_unit))
         for label, value in (
             ("蛋白", selected.protein_g),
             ("脂肪", selected.fat_g),
@@ -230,7 +233,7 @@ class FoodDialog(QDialog):
             ("纤维", selected.fiber_g),
         ):
             if value is not None:
-                nutrition.append(f"{label} {value:.1f} g")
+                nutrition.append(f"{label} {value:.2f} g")
         self.nutrition_label.setText("  ·  ".join(nutrition) if nutrition else selected.detail or "由服务计算")
 
         self.unit_combo.blockSignals(True)
@@ -244,8 +247,8 @@ class FoodDialog(QDialog):
             )
             self.unit_combo.addItem(
                 (
-                    f"{serving.name}（{serving.serving_amount:g} "
-                    f"{serving_unit_label} ≈ {serving.base_amount:g} "
+                    f"{serving.name}（{serving.serving_amount:.2f} "
+                    f"{serving_unit_label} ≈ {serving.base_amount:.2f} "
                     f"{serving.basis_unit}）"
                 ),
                 serving,
@@ -267,7 +270,7 @@ class FoodDialog(QDialog):
         unit = choice
         if unit == "ratio_percent":
             self.amount_spin.setRange(0.1, 1000.0)
-            self.amount_spin.setDecimals(1)
+            self.amount_spin.setDecimals(2)
             self.amount_spin.setSuffix(" %")
             if self.amount_spin.value() > 1000:
                 self.amount_spin.setValue(100.0)
@@ -277,7 +280,7 @@ class FoodDialog(QDialog):
             self.amount_spin.setSuffix(" 份")
         else:
             self.amount_spin.setRange(0.1, 100000.0)
-            self.amount_spin.setDecimals(1)
+            self.amount_spin.setDecimals(2)
             self.amount_spin.setSuffix(f" {unit or ''}")
 
     def _save(self) -> None:

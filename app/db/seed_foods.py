@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from app.db.database import now_iso
+from app.energy_units import kcal_to_kj
 
 if TYPE_CHECKING:
     from app.db.database import Database
@@ -16,7 +17,9 @@ DATA_SOURCE = "CalorieK built-in reference values"
 SOURCE_VERSION = "2026.08-v1"
 
 # Values are practical reference averages per 100 g (or 100 ml for liquids), not
-# medical claims. Users can customize a row; subsequent startup seeding will not
+# medical claims. The reference catalogue is a kcal input boundary; energy is
+# converted exactly once to canonical kJ when inserted. Users can customize a row;
+# subsequent startup seeding will not
 # overwrite the customized record because builtin_key is stable.
 BUILTIN_FOODS: tuple[
     tuple[str, str, str, str, float, float, float, float, float, float], ...
@@ -71,7 +74,7 @@ def _seed(connection: sqlite3.Connection, foods: Iterable[tuple] = BUILTIN_FOODS
         """
         INSERT OR IGNORE INTO foods(
             builtin_key, name, category, brand, basis_amount, basis_unit,
-            kcal, protein_g, fat_g, carb_g, fiber_g, default_serving,
+            kj, protein_g, fat_g, carb_g, fiber_g, default_serving,
             is_builtin, is_favorite, user_modified, data_source,
             source_version, created_at, updated_at, active
         ) VALUES (?, ?, ?, NULL, 100, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?, ?, ?, ?, 1)
@@ -82,7 +85,7 @@ def _seed(connection: sqlite3.Connection, foods: Iterable[tuple] = BUILTIN_FOODS
                 name,
                 category,
                 unit,
-                kcal,
+                kcal_to_kj(kcal),
                 protein,
                 fat,
                 carbs,

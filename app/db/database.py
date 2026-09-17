@@ -13,8 +13,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.db.migrations import execute_schema, migrate_v1_to_v2, schema_sql_for_version, validate_schema
+from app.db.migrations.snapshot import create_pre_migration_snapshot
+from app.version import SCHEMA_VERSION
 
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
 
 def now_iso() -> str:
@@ -74,6 +77,7 @@ class Database:
     def __init__(self, path: str | Path, *, timeout: float = 10.0) -> None:
         self.path = Path(path).expanduser().resolve()
         self.timeout = timeout
+        self.last_migration_snapshot: Path | None = None
 
     def connect(self) -> sqlite3.Connection:
         """Open a configured connection.
@@ -116,44 +120,98 @@ class Database:
         finally:
             connection.close()
 
-    def initialize(self, *, seed_foods: bool = True) -> None:
-        """Create or migrate the database, safely repeatable on every startup."""
+    @staticmethod
+    def _initialization_version(connection: sqlite3.Connection) -> int:
+        """Reject unknown schemas before any journal-mode or schema writes."""
 
-        schema_path = Path(__file__).with_name("schema.sql")
-        schema_sql = schema_path.read_text(encoding="utf-8")
-        with self.connection() as connection:
-            # Journal mode is persistent and must be selected outside a transaction.
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS schema_version "
-                "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%'"
             )
-            current = connection.execute(
+        }
+        current = (
+            connection.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version"
             ).fetchone()[0]
-            if current > LATEST_SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"database schema {current} is newer than supported "
-                    f"schema {LATEST_SCHEMA_VERSION}"
+            if "schema_version" in tables else 0
+        )
+        if not isinstance(current, int) or current < 0:
+            raise RuntimeError("database has an invalid schema version")
+        if current > LATEST_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema {current} is newer than supported "
+                f"schema {LATEST_SCHEMA_VERSION}"
+            )
+        if current == 0 and tables - {"schema_version"}:
+            raise RuntimeError("existing database has no valid schema version")
+        return current
+
+    def initialize(self, *, seed_foods: bool = True) -> None:
+        """Create/migrate atomically; keep a raw v1 snapshot before conversion."""
+
+        self.last_migration_snapshot = None
+        with self.connection() as connection:
+            current = self._initialization_version(connection)
+            if current:
+                validate_schema(connection, current)
+            # Journal mode is persistent and must be selected outside a transaction.
+            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            if not mode or str(mode[0]).lower() != "wal":
+                raise RuntimeError("could not enable WAL before database initialization")
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                # Re-read under the writer lock: another process may have finished
+                # its upgrade since preflight. Never convert a v2 database twice.
+                current = self._initialization_version(connection)
+                timestamp = now_iso()
+                if current == 0:
+                    execute_schema(connection, schema_sql_for_version(LATEST_SCHEMA_VERSION))
+                elif current == 1:
+                    validate_schema(connection, 1)
+                    try:
+                        self.last_migration_snapshot = create_pre_migration_snapshot(
+                            self.path, timeout=self.timeout
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"pre-migration safety snapshot failed; migration was not started: {exc}"
+                        ) from exc
+                    migrate_v1_to_v2(connection, timestamp)
+                elif current == LATEST_SCHEMA_VERSION:
+                    validate_schema(connection, current)
+                else:
+                    raise RuntimeError(f"unsupported database schema {current}")
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
+                    (LATEST_SCHEMA_VERSION, timestamp),
                 )
+                connection.execute(
+                    "INSERT OR IGNORE INTO recalculation_state(id, dirty_from_date, updated_at) "
+                    "VALUES (1, NULL, ?)",
+                    (timestamp,),
+                )
+                if seed_foods:
+                    from app.db.seed_foods import seed_builtin_foods
 
-            # Version 1 is a single idempotent migration. Re-running the CREATE
-            # statements also repairs an interrupted first initialization.
-            connection.executescript(schema_sql)
-            timestamp = now_iso()
-            connection.execute(
-                "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
-                (LATEST_SCHEMA_VERSION, timestamp),
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO recalculation_state(id, dirty_from_date, updated_at) "
-                "VALUES (1, NULL, ?)",
-                (timestamp,),
-            )
-            if seed_foods:
-                from app.db.seed_foods import seed_builtin_foods
-
-                seed_builtin_foods(connection)
+                    seed_builtin_foods(connection)
+                connection.commit()
+            except BaseException as exc:
+                try:
+                    connection.rollback()
+                except Exception as rollback_error:
+                    if self.last_migration_snapshot is not None:
+                        raise RuntimeError(
+                            f"database migration failed: {exc}; rollback also failed: {rollback_error}; "
+                            f"recover from original schema-v1 safety snapshot: {self.last_migration_snapshot}"
+                        ) from exc
+                    raise
+                if self.last_migration_snapshot is not None and isinstance(exc, Exception):
+                    raise RuntimeError(
+                        f"database migration failed and was rolled back: {exc}; "
+                        f"original schema-v1 safety snapshot: {self.last_migration_snapshot}"
+                    ) from exc
+                raise
 
     def get_schema_version(self) -> int:
         with self.connection() as connection:
@@ -241,4 +299,3 @@ class Database:
                 "updated_at = excluded.updated_at",
                 (key, value, timestamp),
             )
-

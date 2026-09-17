@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QPainter, QPicture
 from PySide6.QtWidgets import QLabel, QStackedLayout, QToolTip, QWidget
 
 from app.color_modes import candle_palette
+from app.energy_units import EnergyUnit, format_energy, normalize_energy_unit
 
 try:  # PySide6 can still show the rest of the application without PyQtGraph.
     import pyqtgraph as pg
@@ -28,9 +29,9 @@ class CandlePoint:
     high_kg: float
     low_kg: float
     close_kg: float
-    intake_kcal: float = 0.0
-    burn_kcal: float = 0.0
-    balance_kcal: float = 0.0
+    intake_kj: float = 0.0
+    burn_kj: float = 0.0
+    balance_kj: float = 0.0
     actual_weight_count: int = 0
     open_source: str = ""
     close_source: str = ""
@@ -150,6 +151,7 @@ class CandlestickChart(QWidget):
         self.setMinimumHeight(290)
         self._data: tuple[CandlePoint, ...] = ()
         self._color_mode: ColorMode = "china"
+        self._display_unit: EnergyUnit = "kj"
 
         self._stack = QStackedLayout(self)
         self._empty = QLabel("暂无可显示的体重日线\n录入实际体重后，这里会显示每日 OHLC。", self)
@@ -205,25 +207,56 @@ class CandlestickChart(QWidget):
         self._stack.setCurrentWidget(self._empty)
 
     def set_color_mode(self, mode: ColorMode) -> None:
+        if self._color_mode == mode:
+            return
         self._color_mode = mode
-        self._render()
+        # A display preference must not reset the user's kg-axis zoom/pan.
+        self._paint_candles()
+
+    def _paint_candles(self) -> None:
+        if pg is None or self._candles is None:
+            return
+        up_hex, down_hex, flat_hex = candle_palette(self._color_mode)
+        self._candles.set_data(
+            self._data, QColor(up_hex), QColor(down_hex), QColor(flat_hex)
+        )
 
     def set_data(self, data: Sequence[CandlePoint]) -> None:
-        self._data = tuple(data)
+        points = tuple(data)
+        if points == self._data:
+            self._update_accessibility()
+            return
+        self._data = points
         self._render()
 
+    def set_display_unit(self, unit: str) -> None:
+        """Change energy text only, preserving kg geometry and the view range."""
+
+        normalized = normalize_energy_unit(unit)
+        if self._display_unit != normalized:
+            self._display_unit = normalized
+            QToolTip.hideText()
+        self._update_accessibility()
+        self.update()
+
+    def _update_accessibility(self) -> None:
+        if not self._data:
+            self.setAccessibleDescription("暂无体重日线数据")
+            return
+        self.setAccessibleDescription(
+            f"共 {len(self._data)} 个自然日，最新 " + self._tooltip(self._data[-1])
+        )
+
     def _render(self) -> None:
+        self._update_accessibility()
         if pg is None or self._plot is None or self._candles is None or self._axis is None:
             return
         if not self._data:
             self._stack.setCurrentWidget(self._empty)
-            self.setAccessibleDescription("暂无体重日线数据")
             return
 
-        up_hex, down_hex, flat_hex = candle_palette(self._color_mode)
-        up, down = QColor(up_hex), QColor(down_hex)
         self._axis.set_dates([item.local_date for item in self._data])
-        self._candles.set_data(self._data, up, down, QColor(flat_hex))
+        self._paint_candles()
         self._plot.setXRange(-0.8, max(len(self._data) - 0.2, 1), padding=0.02)
         lows = [item.low_kg for item in self._data]
         highs = [item.high_kg for item in self._data]
@@ -234,11 +267,6 @@ class CandlestickChart(QWidget):
             padding=0.0,
         )
         self._stack.setCurrentWidget(self._plot)
-        latest = self._data[-1]
-        self.setAccessibleDescription(
-            f"共 {len(self._data)} 个自然日，最新 {latest.local_date:%Y-%m-%d}，"
-            f"开盘 {latest.open_kg:.2f} kg，收盘 {latest.close_kg:.2f} kg"
-        )
 
     def _mouse_moved(self, event: tuple[object, ...]) -> None:
         if (
@@ -266,19 +294,23 @@ class CandlestickChart(QWidget):
         self._h_line.setPos(view_pos.y())
         self._v_line.show()
         self._h_line.show()
+        viewport_pos = self._plot.mapFromScene(scene_pos)
+        QToolTip.showText(self._plot.mapToGlobal(viewport_pos), self._tooltip(candle), self._plot)
+
+    def _tooltip(self, candle: CandlePoint) -> str:
         actual_text = f"{candle.actual_weight_count} 次"
         source_text = ""
         if candle.open_source or candle.close_source:
             source_text = f"\n来源：O {candle.open_source or '-'} / C {candle.close_source or '-'}"
-        tooltip = (
+        return (
             f"{candle.local_date:%Y-%m-%d} · {candle.direction_text}\n"
             f"O {candle.open_kg:.2f}  H {candle.high_kg:.2f}  "
             f"L {candle.low_kg:.2f}  C {candle.close_kg:.2f} kg\n"
-            f"摄入 {candle.intake_kcal:.0f} kcal  消耗 {candle.burn_kcal:.0f} kcal\n"
-            f"余额 {candle.balance_kcal:+.0f} kcal  实际称重 {actual_text}{source_text}"
+            f"摄入 {format_energy(candle.intake_kj, self._display_unit)}  "
+            f"消耗 {format_energy(candle.burn_kj, self._display_unit)}\n"
+            f"余额 {format_energy(candle.balance_kj, self._display_unit, signed=True)}  "
+            f"实际称重 {actual_text}{source_text}"
         )
-        viewport_pos = self._plot.mapFromScene(scene_pos)
-        QToolTip.showText(self._plot.mapToGlobal(viewport_pos), tooltip, self._plot)
 
 
 __all__ = ["CandlePoint", "CandlestickChart", "ColorMode"]

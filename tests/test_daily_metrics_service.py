@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from app.db.database import Database
+from app.energy_units import DEFAULT_KJ_PER_KG, kcal_to_kj
 from app.services.daily_metrics_service import DailyMetricsService
 from app.services.food_service import FoodService
 from app.services.profile_service import ProfileService
@@ -35,13 +36,27 @@ class DailyMetricsIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_invalid_stored_energy_equivalence_uses_default(self) -> None:
+        for value in ("inf", "-inf", "nan", "0", "-1", "invalid"):
+            with self.subTest(value=value):
+                self.db.set_setting("kj_per_kg", value)
+                created = DailyMetricsService(self.db)
+                self.assertEqual(created.weight_model.kj_per_kg, DEFAULT_KJ_PER_KG)
+                self.metrics.refresh_model_settings()
+                self.assertEqual(self.metrics.weight_model.kj_per_kg, DEFAULT_KJ_PER_KG)
+
+        valid_kj_per_kg = 31234.56789012345
+        self.db.set_setting("kj_per_kg", repr(valid_kj_per_kg))
+        self.metrics.refresh_model_settings()
+        self.assertEqual(self.metrics.weight_model.kj_per_kg, valid_kj_per_kg)
+
     def test_no_measurement_candle_stays_flat_but_prediction_can_rise(self) -> None:
         event_day = self.first_day + timedelta(days=1)
         self.foods.record_custom_intake(
             name="模拟高热量摄入",
             amount=1,
             unit="份",
-            kcal=3000,
+            kj=kcal_to_kj(3000),
             occurred_at=datetime.combine(event_day, time(12, 0)),
         )
         self.metrics.rebuild_all(event_day)
@@ -59,7 +74,7 @@ class DailyMetricsIntegrationTests(unittest.TestCase):
             name="历史摄入",
             amount=1,
             unit="份",
-            kcal=500,
+            kj=kcal_to_kj(500),
             occurred_at=datetime.combine(changed_day, time(12, 0)),
         )
         self.metrics.rebuild_all(self.today)
@@ -117,7 +132,7 @@ class DailyMetricsIntegrationTests(unittest.TestCase):
             name="迟到的历史记录",
             amount=1,
             unit="份",
-            kcal=1000,
+            kj=kcal_to_kj(1000),
             occurred_at=datetime.combine(changed_day, time(12, 0)),
         )
         self.metrics.recalculate(changed_day, changed_day)

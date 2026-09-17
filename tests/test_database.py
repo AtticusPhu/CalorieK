@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.db import LATEST_SCHEMA_VERSION, Database, normalize_date, normalize_datetime
 from app.db.seed_foods import BUILTIN_FOODS, seed_builtin_foods
+from app.energy_units import kcal_to_kj
 
 
 class DatabaseTests(unittest.TestCase):
@@ -51,8 +52,12 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             food_count = int(connection.execute("SELECT COUNT(*) FROM foods").fetchone()[0])
             self.assertEqual(food_count, len(BUILTIN_FOODS))
+            rice = connection.execute(
+                "SELECT kj FROM foods WHERE builtin_key = 'rice-cooked'"
+            ).fetchone()
+            self.assertEqual(rice[0], kcal_to_kj(116))
             connection.execute(
-                "UPDATE foods SET kcal = 999, user_modified = 1 WHERE builtin_key = ?",
+                "UPDATE foods SET kj = 999.123456789, user_modified = 1 WHERE builtin_key = ?",
                 ("beef-lean",),
             )
 
@@ -61,10 +66,10 @@ class DatabaseTests(unittest.TestCase):
         with self.db.connection() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM foods").fetchone()[0], food_count)
             edited = connection.execute(
-                "SELECT kcal, user_modified FROM foods WHERE builtin_key = ?",
+                "SELECT kj, user_modified FROM foods WHERE builtin_key = ?",
                 ("beef-lean",),
             ).fetchone()
-        self.assertEqual(float(edited["kcal"]), 999.0)
+        self.assertEqual(float(edited["kj"]), 999.123456789)
         self.assertEqual(int(edited["user_modified"]), 1)
 
     def test_transaction_rolls_back_all_changes(self) -> None:

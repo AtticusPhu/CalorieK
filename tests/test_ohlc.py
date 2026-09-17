@@ -28,8 +28,8 @@ class OHLCGeneratorTests(unittest.TestCase):
             OHLCInput(
                 day=DAY,
                 previous_close_kg=70,
-                baseline_kcal=1800,
-                events=(EnergyEvent(at(12), 3000, EnergyEventType.INTAKE),),
+                baseline_kj=7531.2,
+                events=(EnergyEvent(at(12), 12552, EnergyEventType.INTAKE),),
             )
         )
         self.assertEqual(
@@ -41,14 +41,14 @@ class OHLCGeneratorTests(unittest.TestCase):
 
     def test_first_day_without_any_anchor_fails_explicitly(self) -> None:
         with self.assertRaises(MissingWeightAnchorError):
-            self.generator.generate_day(OHLCInput(day=DAY, baseline_kcal=1800))
+            self.generator.generate_day(OHLCInput(day=DAY, baseline_kj=7531.2))
 
     def test_single_morning_measurement_is_open(self) -> None:
         result = self.generator.generate_day(
             OHLCInput(
                 day=DAY,
                 measurements=(WeightMeasurement(at(7, 30), 70),),
-                baseline_kcal=770,
+                baseline_kj=3221.68,
             )
         )
         self.assertAlmostEqual(result.open_kg, 70)
@@ -61,7 +61,7 @@ class OHLCGeneratorTests(unittest.TestCase):
             OHLCInput(
                 day=DAY,
                 measurements=(WeightMeasurement(at(22, 30), 69.8),),
-                baseline_kcal=770,
+                baseline_kj=3221.68,
             )
         )
         self.assertAlmostEqual(result.close_kg, 69.8)
@@ -74,7 +74,7 @@ class OHLCGeneratorTests(unittest.TestCase):
                 measurements=(
                     WeightMeasurement(at(22, 30), 70, anchor=WeightAnchor.OPEN),
                 ),
-                baseline_kcal=770,
+                baseline_kj=3221.68,
             )
         )
         self.assertAlmostEqual(result.open_kg, 70)
@@ -88,7 +88,7 @@ class OHLCGeneratorTests(unittest.TestCase):
             WeightMeasurement(at(23, 15), 70.21),
         )
         result = self.generator.generate_day(
-            OHLCInput(day=DAY, measurements=measurements, baseline_kcal=1800)
+            OHLCInput(day=DAY, measurements=measurements, baseline_kj=7531.2)
         )
         self.assertAlmostEqual(result.open_kg, 70.10)
         self.assertAlmostEqual(result.close_kg, 70.21)
@@ -100,18 +100,18 @@ class OHLCGeneratorTests(unittest.TestCase):
         base = OHLCInput(
             day=DAY,
             measurements=(WeightMeasurement(at(7), 70, WeightAnchor.OPEN),),
-            baseline_kcal=1000,
+            baseline_kj=4184,
             events=(
-                EnergyEvent(at(12), 2000, EnergyEventType.INTAKE, "lunch"),
-                EnergyEvent(at(18), 500, EnergyEventType.EXERCISE, "run"),
+                EnergyEvent(at(12), 8368, EnergyEventType.INTAKE, "lunch"),
+                EnergyEvent(at(18), 2092, EnergyEventType.EXERCISE, "run"),
             ),
         )
         calibrated = OHLCInput(
             day=DAY,
             measurements=base.measurements,
             events=base.events,
-            baseline_kcal=base.baseline_kcal,
-            calibration_kcal_day=300,
+            baseline_kj=base.baseline_kj,
+            calibration_kj_day=1255.2,
         )
         plain_result = self.generator.generate_day(base)
         calibrated_result = self.generator.generate_day(calibrated)

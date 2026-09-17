@@ -1,4 +1,4 @@
-"""Exercise Active Calories entry dialog with last-value carry-forward."""
+"""Exercise active-energy entry dialog with last-value carry-forward."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QListWidget,
@@ -22,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from .context import ExerciseDraft, ExerciseSection, ExerciseTypeDTO, UIContext
+from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
+from app.energy_units import energy_unit_label, format_energy, kcal_to_kj
 
 
 class ExerciseDialog(QDialog):
@@ -30,6 +31,7 @@ class ExerciseDialog(QDialog):
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._context = context
+        self._energy_unit = context.get_energy_display_unit()
         self._selected: ExerciseTypeDTO | None = None
         self.setWindowTitle("记录运动")
         self.setMinimumSize(560, 560)
@@ -37,7 +39,7 @@ class ExerciseDialog(QDialog):
 
         title = QLabel("记录额外运动消耗")
         title.setObjectName("pageTitle")
-        helper = QLabel("这里填写 Active Calories，不包含静息基础消耗。选择项目后会带入上次值。")
+        helper = QLabel("这里填写额外运动消耗，不包含静息基础消耗。选择项目后会带入上次值。")
         helper.setObjectName("muted")
         helper.setWordWrap(True)
 
@@ -65,7 +67,7 @@ class ExerciseDialog(QDialog):
         self.at_edit.setAccessibleName("运动发生时间")
         form.addRow("发生时间 *", self.at_edit)
 
-        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin = PreciseDoubleSpinBox()
         self.duration_spin.setRange(1.0, 1440.0)
         self.duration_spin.setDecimals(0)
         self.duration_spin.setValue(30.0)
@@ -73,13 +75,13 @@ class ExerciseDialog(QDialog):
         self.duration_spin.setAccessibleName("运动持续时间")
         form.addRow("持续时间 *", self.duration_spin)
 
-        self.kcal_spin = QDoubleSpinBox()
-        self.kcal_spin.setRange(0.0, 10000.0)
-        self.kcal_spin.setDecimals(0)
-        self.kcal_spin.setValue(0.0)
-        self.kcal_spin.setSuffix(" kcal")
-        self.kcal_spin.setAccessibleName("额外运动消耗")
-        form.addRow("Active Calories *", self.kcal_spin)
+        self.energy_spin = EnergySpinBox(unit=self._energy_unit)
+        self.energy_spin.set_kj_range(0.0, kcal_to_kj(10000.0))
+        self.energy_spin.set_energy_kj(0.0)
+        self.energy_spin.setAccessibleName(
+            f"额外运动消耗（{energy_unit_label(self._energy_unit)}）"
+        )
+        form.addRow("额外运动消耗 *", self.energy_spin)
 
         self.note_edit = QPlainTextEdit()
         self.note_edit.setMaximumHeight(68)
@@ -122,10 +124,13 @@ class ExerciseDialog(QDialog):
                 widget.addItem(item)
             for exercise in types:
                 duration = exercise.last_duration_min or exercise.default_duration_min
-                kcal = exercise.last_active_kcal
-                if kcal is None:
-                    kcal = exercise.default_active_kcal
-                item = QListWidgetItem(f"{exercise.name}    {duration:.0f} min / {kcal:.0f} kcal")
+                kj = exercise.last_active_kj
+                if kj is None:
+                    kj = exercise.default_active_kj
+                item = QListWidgetItem(
+                    f"{exercise.name}    {duration:.0f} min / {format_energy(kj, self._energy_unit)}"
+                )
+                item.setToolTip(item.text())
                 item.setData(Qt.ItemDataRole.UserRole, exercise)
                 widget.addItem(item)
         current = self.lists[self.tabs.currentIndex()]
@@ -151,22 +156,26 @@ class ExerciseDialog(QDialog):
         exercise = self._selected
         self.selected_label.setText(exercise.name)
         self.duration_spin.setValue(exercise.last_duration_min or exercise.default_duration_min)
-        kcal = exercise.last_active_kcal
-        self.kcal_spin.setValue(exercise.default_active_kcal if kcal is None else kcal)
+        kj = exercise.last_active_kj
+        self.energy_spin.set_energy_kj(exercise.default_active_kj if kj is None else kj)
 
     def _save(self) -> None:
         if self._selected is None:
             QMessageBox.warning(self, "请选择项目", "请先选择一个运动项目。")
             return
-        if self.kcal_spin.value() <= 0:
-            QMessageBox.warning(self, "检查消耗", "Active Calories 必须大于 0 kcal。")
-            self.kcal_spin.setFocus()
+        if self.energy_spin.energy_kj() <= 0:
+            QMessageBox.warning(
+                self,
+                "检查消耗",
+                f"额外运动消耗必须大于 0 {energy_unit_label(self._energy_unit)}。",
+            )
+            self.energy_spin.setFocus()
             return
         draft = ExerciseDraft(
             occurred_at=self.at_edit.dateTime().toPython(),
             exercise_type_id=self._selected.exercise_type_id,
             duration_min=self.duration_spin.value(),
-            active_kcal=self.kcal_spin.value(),
+            active_kj=self.energy_spin.energy_kj(),
             note=self.note_edit.toPlainText().strip(),
         )
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)

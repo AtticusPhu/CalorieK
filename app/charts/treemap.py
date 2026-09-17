@@ -1,4 +1,4 @@
-"""A dependency-light QWidget treemap for absolute daily kcal composition."""
+"""A QWidget treemap using canonical kJ areas and selectable energy text."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QToolTip, QWidget
 
 from app.color_modes import treemap_palette
+from app.energy_units import EnergyUnit, energy_unit_label, format_energy, normalize_energy_unit
 
 
 TreemapColorMode = Literal["intake_red", "intake_green"]
@@ -19,7 +20,7 @@ TreemapColorMode = Literal["intake_red", "intake_green"]
 class TreemapItem:
     key: str
     name: str
-    kcal: float
+    kj: float
     side: Literal["intake", "burn"]
     category: str = "其它"
     protein_g: float | None = None
@@ -78,15 +79,15 @@ def layout_treemap(
     items: Sequence[TreemapItem],
     rect: NumericRect,
 ) -> tuple[TreemapRegion, ...]:
-    """Build a two-level intake/burn treemap using ``abs(kcal)`` only."""
+    """Build a two-level intake/burn treemap using ``abs(kj)`` only."""
 
     groups: dict[str, list[TreemapItem]] = {"intake": [], "burn": []}
     for item in items:
-        if item.side in groups and abs(item.kcal) > 0:
+        if item.side in groups and abs(item.kj) > 0:
             groups[item.side].append(item)
 
     group_weights = [
-        (side, sum(abs(item.kcal) for item in group_items))
+        (side, sum(abs(item.kj) for item in group_items))
         for side, group_items in groups.items()
         if group_items
     ]
@@ -97,7 +98,7 @@ def layout_treemap(
         if group_rect is None:
             continue
         item_rects = _split_weighted(
-            [(item.key, abs(item.kcal)) for item in group_items],
+            [(item.key, abs(item.kj)) for item in group_items],
             group_rect,
             split_vertical=group_rect.width < group_rect.height,
         )
@@ -119,18 +120,38 @@ class TreemapWidget(QWidget):
         self._items: tuple[TreemapItem, ...] = ()
         self._regions: tuple[TreemapRegion, ...] = ()
         self._mode: TreemapColorMode = "intake_red"
+        self._display_unit: EnergyUnit = "kj"
         self._last_hover_key: str | None = None
 
     def set_data(self, items: Sequence[TreemapItem]) -> None:
-        self._items = tuple(item for item in items if abs(item.kcal) > 0)
-        self._rebuild_layout()
-        total = sum(abs(item.kcal) for item in self._items)
+        canonical_items = tuple(item for item in items if abs(item.kj) > 0)
+        if canonical_items != self._items:
+            self._items = canonical_items
+            self._rebuild_layout()
+        self._last_hover_key = None
+        self._update_accessibility()
+        self.update()
+
+    def set_display_unit(self, unit: str) -> None:
+        """Change text without rescaling kJ data or rebuilding rectangles."""
+
+        normalized = normalize_energy_unit(unit)
+        if self._display_unit != normalized:
+            self._display_unit = normalized
+            self._last_hover_key = None
+            QToolTip.hideText()
+        self._update_accessibility()
+        self.update()
+
+    def _update_accessibility(self) -> None:
+        total = sum(abs(item.kj) for item in self._items)
         self.setAccessibleDescription(
-            f"当天共 {len(self._items)} 个热量组成项目，绝对热量合计 {total:.0f} kcal"
+            f"当天共 {len(self._items)} 个热量组成项目，"
+            f"绝对热量合计 {format_energy(total, self._display_unit)}。"
+            + "；".join(self._tooltip(item) for item in self._items)
             if self._items
             else "当天暂无摄入或消耗事件"
         )
-        self.update()
 
     def set_color_mode(self, mode: TreemapColorMode) -> None:
         self._mode = mode
@@ -167,7 +188,8 @@ class TreemapWidget(QWidget):
             painter.drawText(
                 self.rect().adjusted(24, 24, -24, -24),
                 Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-                "今天还没有热量构成数据\n录入饮食或运动后会按 |kcal| 显示面积。",
+                "今天还没有热量构成数据\n"
+                f"录入饮食或运动后会按 |{energy_unit_label(self._display_unit)}| 显示面积。",
             )
             return
 
@@ -193,13 +215,14 @@ class TreemapWidget(QWidget):
                 painter.drawText(
                     text_rect,
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    f"{name}\n{abs(item.kcal):.0f} kcal\n{prefix} · {item.category}",
+                    f"{name}\n{format_energy(abs(item.kj), self._display_unit)}\n"
+                    f"{prefix} · {item.category}",
                 )
             else:
                 painter.drawText(
                     text_rect,
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                    f"{name}\n{abs(item.kcal):.0f} kcal",
+                    f"{name}\n{format_energy(abs(item.kj), self._display_unit)}",
                 )
 
     def _color_for(self, side: str, index: int) -> QColor:
@@ -226,19 +249,22 @@ class TreemapWidget(QWidget):
         self._last_hover_key = None
         QToolTip.hideText()
 
-    @staticmethod
-    def _tooltip(item: TreemapItem) -> str:
+    def _tooltip(self, item: TreemapItem) -> str:
         side = "摄入" if item.side == "intake" else "消耗"
-        lines = [f"{item.name} · {side}", f"{abs(item.kcal):.0f} kcal", f"分类：{item.category}"]
+        lines = [
+            f"{item.name} · {side}",
+            format_energy(abs(item.kj), self._display_unit),
+            f"分类：{item.category}",
+        ]
         if item.side == "intake":
             if item.protein_g is not None:
-                lines.append(f"蛋白质：{item.protein_g:.1f} g")
+                lines.append(f"蛋白质：{item.protein_g:.2f} g")
             if item.fat_g is not None:
-                lines.append(f"脂肪：{item.fat_g:.1f} g")
+                lines.append(f"脂肪：{item.fat_g:.2f} g")
             if item.carb_g is not None:
-                lines.append(f"碳水：{item.carb_g:.1f} g")
+                lines.append(f"碳水：{item.carb_g:.2f} g")
             if item.fiber_g is not None:
-                lines.append(f"膳食纤维：{item.fiber_g:.1f} g")
+                lines.append(f"膳食纤维：{item.fiber_g:.2f} g")
         elif item.duration_min is not None:
             lines.append(f"持续时间：{item.duration_min:.0f} min")
         return "\n".join(lines)

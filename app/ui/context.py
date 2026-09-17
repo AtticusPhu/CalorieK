@@ -3,6 +3,7 @@
 The UI deliberately depends on this protocol instead of concrete database or model
 implementations.  The composition root should provide a small adapter implementing
 ``UIContext`` and translate these DTOs to the service-layer types used by the app.
+All energy fields use canonical kJ; widgets convert only at display/input boundaries.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Literal, Protocol, Sequence, runtime_checkable
+
+from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit
 
 
 ColorMode = Literal["china", "international"]
@@ -41,9 +44,9 @@ class CandleDTO:
     high_kg: float
     low_kg: float
     close_kg: float
-    intake_kcal: float = 0.0
-    burn_kcal: float = 0.0
-    balance_kcal: float = 0.0
+    intake_kj: float = 0.0
+    burn_kj: float = 0.0
+    balance_kj: float = 0.0
     actual_weight_count: int = 0
     open_source: str = ""
     close_source: str = ""
@@ -53,7 +56,7 @@ class CandleDTO:
 class TreemapItemDTO:
     key: str
     name: str
-    kcal: float
+    kj: float
     side: Literal["intake", "burn"]
     category: str = "其它"
     protein_g: float | None = None
@@ -70,14 +73,14 @@ class DashboardDTO:
     latest_actual_at: datetime | None = None
     predicted_weight_kg: float | None = None
     predicted_change_kg: float | None = None
-    intake_kcal: float = 0.0
-    baseline_kcal: float = 0.0
-    exercise_kcal: float = 0.0
-    total_burn_kcal: float = 0.0
-    balance_kcal: float = 0.0
+    intake_kj: float = 0.0
+    baseline_kj: float = 0.0
+    exercise_kj: float = 0.0
+    total_burn_kj: float = 0.0
+    balance_kj: float = 0.0
     candles: tuple[CandleDTO, ...] = ()
     treemap_items: tuple[TreemapItemDTO, ...] = ()
-    calibration_kcal_day: float = 0.0
+    calibration_kj_day: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +106,7 @@ class IntakeSourceDTO:
     name: str
     category: str = "其它"
     detail: str = ""
-    kcal_reference: float | None = None
+    kj_reference: float | None = None
     protein_g: float | None = None
     fat_g: float | None = None
     carb_g: float | None = None
@@ -131,9 +134,9 @@ class ExerciseTypeDTO:
     exercise_type_id: int
     name: str
     default_duration_min: float = 30.0
-    default_active_kcal: float = 0.0
+    default_active_kj: float = 0.0
     last_duration_min: float | None = None
-    last_active_kcal: float | None = None
+    last_active_kj: float | None = None
     favorite: bool = False
     active: bool = True
 
@@ -143,7 +146,7 @@ class ExerciseTypeDraft:
     exercise_type_id: int | None
     name: str
     default_duration_min: float
-    default_active_kcal: float
+    default_active_kj: float
     favorite: bool = False
 
 
@@ -152,7 +155,7 @@ class ExerciseDraft:
     occurred_at: datetime
     exercise_type_id: int
     duration_min: float
-    active_kcal: float
+    active_kj: float
     note: str = ""
 
 
@@ -172,7 +175,7 @@ class FoodDTO:
     brand: str = ""
     basis_amount: float = 100.0
     basis_unit: FoodBasisUnit = "g"
-    kcal: float = 0.0
+    kj: float = 0.0
     protein_g: float = 0.0
     fat_g: float = 0.0
     carb_g: float = 0.0
@@ -194,7 +197,7 @@ class FoodDraft:
     brand: str
     basis_amount: float
     basis_unit: FoodBasisUnit
-    kcal: float
+    kj: float
     protein_g: float
     fat_g: float
     carb_g: float
@@ -210,7 +213,7 @@ class RecipeSummaryDTO:
     total_weight_g: float = 0.0
     total_volume_ml: float = 0.0
     normalization_unit: FoodBasisUnit | None = "g"
-    total_kcal: float = 0.0
+    total_kj: float = 0.0
     active: bool = True
 
 
@@ -227,12 +230,12 @@ class NutritionDTO:
     total_weight_g: float = 0.0
     total_volume_ml: float = 0.0
     normalization_unit: FoodBasisUnit | None = "g"
-    kcal: float = 0.0
+    kj: float = 0.0
     protein_g: float = 0.0
     fat_g: float = 0.0
     carb_g: float = 0.0
     fiber_g: float = 0.0
-    per_100g_kcal: float = 0.0
+    per_100g_kj: float = 0.0
     per_100g_protein_g: float = 0.0
     per_100g_fat_g: float = 0.0
     per_100g_carb_g: float = 0.0
@@ -268,8 +271,9 @@ class SettingsDTO:
     sleep_multiplier: float = 0.95
     candle_color_mode: ColorMode = "china"
     treemap_color_mode: TreemapColorMode = "intake_red"
-    kcal_per_kg: float = 7700.0
+    kj_per_kg: float = DEFAULT_KJ_PER_KG
     data_directory: Path = field(default_factory=lambda: Path("data"))
+    energy_display_unit: EnergyUnit = "kj"
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,8 +287,9 @@ class SettingsDraft:
     sleep_multiplier: float
     candle_color_mode: ColorMode
     treemap_color_mode: TreemapColorMode
-    kcal_per_kg: float
+    kj_per_kg: float
     data_directory: Path
+    energy_display_unit: EnergyUnit = "kj"
 
 
 @runtime_checkable
@@ -350,7 +355,11 @@ class UIContext(Protocol):
 
     def get_settings(self) -> SettingsDTO: ...
 
-    def save_settings(self, settings: SettingsDraft) -> None: ...
+    def get_energy_display_unit(self) -> EnergyUnit: ...
+
+    def save_settings(self, settings: SettingsDraft) -> bool:
+        """Save settings and return whether model/data inputs changed."""
+        ...
 
     def backup_data(self, destination: Path) -> Path: ...
 

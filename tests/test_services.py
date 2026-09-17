@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from app.db import Database
+from app.energy_units import kcal_to_kj
 from app.services import ExerciseService, ProfileService, WeightService
 
 
@@ -133,7 +134,7 @@ class ServiceTests(unittest.TestCase):
         running_id = exercises.create_exercise_type(
             name="跑步",
             default_duration_min=45,
-            default_active_kcal=420,
+            default_active_kj=kcal_to_kj(420),
             favorite=True,
         )
         first_id = exercises.record_exercise(
@@ -142,18 +143,18 @@ class ServiceTests(unittest.TestCase):
         )
         first = exercises.get_exercise_event(first_id)
         self.assertEqual(first["duration_min"], 45.0)
-        self.assertEqual(first["active_kcal"], 420.0)
+        self.assertEqual(first["active_kj"], kcal_to_kj(420.0))
         self.assertEqual(first["name_snapshot"], "跑步")
 
         exercises.update_exercise_type(
             running_id,
             name="户外跑步",
             default_duration_min=30,
-            default_active_kcal=250,
+            default_active_kj=kcal_to_kj(250),
         )
         self.assertEqual(exercises.get_last_values(running_id), {
             "duration_min": 45.0,
-            "active_kcal": 420.0,
+            "active_kj": kcal_to_kj(420.0),
         })
         second_id = exercises.record_exercise(
             running_id,
@@ -167,9 +168,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(exercises.list_exercise_events()), 2)
         # The source shortcut can be inactive while its historical event remains
         # correctable and keeps the original name snapshot.
-        exercises.update_exercise_event(first_id, active_kcal=400)
+        exercises.update_exercise_event(first_id, active_kj=kcal_to_kj(400))
         corrected = exercises.get_exercise_event(first_id)
-        self.assertEqual(corrected["active_kcal"], 400.0)
+        self.assertEqual(corrected["active_kj"], kcal_to_kj(400.0))
         self.assertEqual(corrected["name_snapshot"], "跑步")
         exercises.soft_delete_exercise_event(first_id)
         self.assertIsNone(exercises.get_exercise_event(first_id, include_inactive=False))
@@ -238,7 +239,7 @@ class ServiceTests(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             ExerciseService(self.db).create_exercise_type(
-                name="无效运动", default_active_kcal=float("inf")
+                name="无效运动", default_active_kj=float("inf")
             )
 
 

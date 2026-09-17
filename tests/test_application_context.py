@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.application import ApplicationContext
+from app.energy_units import DEFAULT_KJ_PER_KG, kcal_to_kj
 from app.ui.context import (
     ExerciseTypeDraft,
     IntakeDraft,
@@ -53,7 +54,7 @@ class ApplicationContextTests(unittest.TestCase):
             sleep_multiplier=current.sleep_multiplier,
             candle_color_mode="international",
             treemap_color_mode="intake_green",
-            kcal_per_kg=7500.0,
+            kj_per_kg=kcal_to_kj(7500.0),
             data_directory=target,
         )
 
@@ -71,7 +72,7 @@ class ApplicationContextTests(unittest.TestCase):
         relocated = self.context.get_settings()
         self.assertEqual(relocated.candle_color_mode, "international")
         self.assertEqual(relocated.treemap_color_mode, "intake_green")
-        self.assertEqual(relocated.kcal_per_kg, 7500.0)
+        self.assertEqual(relocated.kj_per_kg, kcal_to_kj(7500.0))
         self.assertTrue(self.context.has_profile())
         self.assertTrue(self.context.get_dashboard().candles)
 
@@ -81,7 +82,7 @@ class ApplicationContextTests(unittest.TestCase):
                 exercise_type_id=None,
                 name="划船机",
                 default_duration_min=35.0,
-                default_active_kcal=280.0,
+                default_active_kj=kcal_to_kj(280.0),
                 favorite=True,
             )
         )
@@ -97,12 +98,12 @@ class ApplicationContextTests(unittest.TestCase):
                 exercise_type_id=created.exercise_type_id,
                 name="划船机间歇",
                 default_duration_min=40.0,
-                default_active_kcal=320.0,
+                default_active_kj=kcal_to_kj(320.0),
                 favorite=False,
             )
         )
         self.assertEqual(updated.default_duration_min, 40.0)
-        self.assertEqual(updated.default_active_kcal, 320.0)
+        self.assertEqual(updated.default_active_kj, kcal_to_kj(320.0))
         self.assertFalse(updated.favorite)
 
         self.context.set_exercise_type_active(created.exercise_type_id, False)
@@ -132,7 +133,7 @@ class ApplicationContextTests(unittest.TestCase):
             name="测试杏仁饮",
             category="蛋奶",
             basis_unit="ml",
-            kcal=40.0,
+            kj=kcal_to_kj(40.0),
             protein_g=1.0,
         )
         glass_id = self.context.foods.add_serving(
@@ -166,20 +167,20 @@ class ApplicationContextTests(unittest.TestCase):
         event = self.context.foods.list_intake_events(local_date="2026-09-04")[-1]
         self.assertEqual(event["amount"], 2.0)
         self.assertEqual(event["unit"], "serving")
-        self.assertAlmostEqual(float(event["kcal_snapshot"]), 200.0)
+        self.assertAlmostEqual(float(event["kj_snapshot"]), kcal_to_kj(200.0))
 
     def test_mixed_unit_recipe_is_not_reported_as_a_weight(self) -> None:
         solid_id = self.context.foods.create_food(
             name="测试谷物",
             category="主食",
             basis_unit="g",
-            kcal=100.0,
+            kj=kcal_to_kj(100.0),
         )
         liquid_id = self.context.foods.create_food(
             name="测试汤底",
             category="其它",
             basis_unit="ml",
-            kcal=20.0,
+            kj=kcal_to_kj(20.0),
         )
         detail = self.context.save_recipe(
             RecipeDraft(
@@ -201,7 +202,7 @@ class ApplicationContextTests(unittest.TestCase):
             if item.source_id == detail.recipe_id
         )
         self.assertEqual(source.allowed_units, ("ratio_percent",))
-        self.assertIn("100 g + 250 ml", source.detail)
+        self.assertIn("100.00 g + 250.00 ml", source.detail)
 
     def test_invalid_color_modes_are_rejected_before_settings_write(self) -> None:
         current = self.context.get_settings()
@@ -215,7 +216,7 @@ class ApplicationContextTests(unittest.TestCase):
             sleep_multiplier=current.sleep_multiplier,
             candle_color_mode="western",  # type: ignore[arg-type]
             treemap_color_mode="intake_blue",  # type: ignore[arg-type]
-            kcal_per_kg=current.kcal_per_kg,
+            kj_per_kg=current.kj_per_kg,
             data_directory=current.data_directory,
         )
         with self.assertRaises(ValueError):
@@ -230,6 +231,25 @@ class ApplicationContextTests(unittest.TestCase):
         settings = self.context.get_settings()
         self.assertEqual(settings.candle_color_mode, "china")
         self.assertEqual(settings.treemap_color_mode, "intake_red")
+
+    def test_runtime_defaults_and_dtos_use_canonical_kj(self) -> None:
+        self.assertEqual(self.context.get_settings().kj_per_kg, DEFAULT_KJ_PER_KG)
+        running = next(item for item in self.context.list_exercise_shortcuts() if item.name == "跑步")
+        self.assertEqual(running.default_active_kj, kcal_to_kj(300.0))
+        food_id = self.context.foods.create_food(
+            name="精度食品", category="其它", basis_unit="g", kj=123.12345678901234
+        )
+        food = next(item for item in self.context.list_foods() if item.food_id == food_id)
+        self.assertEqual(food.kj, 123.12345678901234)
+        source = next(item for item in self.context.list_intake_sources("search", "精度食品")
+                      if item.source_id == food_id)
+        self.assertEqual(source.kj_reference, food.kj)
+        self.assertIn("kJ", source.detail)
+
+    def test_nonfinite_stored_energy_equivalence_falls_back(self) -> None:
+        for value in ("nan", "inf", "-1", "broken"):
+            self.context.database.set_setting("kj_per_kg", value)
+            self.assertEqual(self.context.get_settings().kj_per_kg, DEFAULT_KJ_PER_KG)
 
 
 if __name__ == "__main__":

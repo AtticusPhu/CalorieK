@@ -8,6 +8,8 @@ from enum import Enum
 from math import isfinite
 from typing import Protocol, runtime_checkable
 
+from app.energy_units import kcal_to_kj
+
 
 class Sex(str, Enum):
     """Biological sex values supported by the Mifflin-St Jeor equation."""
@@ -20,9 +22,9 @@ class Sex(str, Enum):
 class BaselineBurnResult:
     """Integrated baseline burn over a requested datetime interval."""
 
-    total_kcal: float
-    awake_kcal: float
-    sleep_kcal: float
+    total_kj: float
+    awake_kj: float
+    sleep_kj: float
     awake_hours: float
     sleep_hours: float
 
@@ -39,12 +41,12 @@ class MetabolismModel(Protocol):
         height_cm: float,
         age_years: float,
     ) -> float:
-        """Return resting metabolic rate in kcal/day."""
+        """Return resting metabolic rate in kJ/day."""
 
     def calculate_baseline_burn(
         self,
         *,
-        rmr_kcal_day: float,
+        rmr_kj_day: float,
         start_at: datetime,
         end_at: datetime,
         wake_time: time,
@@ -131,12 +133,13 @@ class MifflinStJeorModel:
         if age < 0:
             raise ValueError("age_years cannot be negative")
         constant = 5.0 if _normalise_sex(sex) is Sex.MALE else -161.0
-        return 10.0 * weight + 6.25 * height - 5.0 * age + constant
+        # The published equation returns kcal/day; cross the unit boundary here.
+        return kcal_to_kj(10.0 * weight + 6.25 * height - 5.0 * age + constant)
 
     def calculate_baseline_burn(
         self,
         *,
-        rmr_kcal_day: float,
+        rmr_kj_day: float,
         start_at: datetime,
         end_at: datetime,
         wake_time: time,
@@ -144,7 +147,7 @@ class MifflinStJeorModel:
         awake_multiplier: float = 1.20,
         sleep_multiplier: float = 0.95,
     ) -> BaselineBurnResult:
-        rmr = _positive("rmr_kcal_day", rmr_kcal_day)
+        rmr = _positive("rmr_kj_day", rmr_kj_day)
         awake_factor = _positive("awake_multiplier", awake_multiplier)
         sleep_factor = _positive("sleep_multiplier", sleep_multiplier)
         if wake_time.replace(tzinfo=None) == sleep_time.replace(tzinfo=None):
@@ -183,12 +186,12 @@ class MifflinStJeorModel:
                 sleep_hours += hours
 
         hourly_rmr = rmr / 24.0
-        awake_kcal = hourly_rmr * awake_factor * awake_hours
-        sleep_kcal = hourly_rmr * sleep_factor * sleep_hours
+        awake_kj = hourly_rmr * awake_factor * awake_hours
+        sleep_kj = hourly_rmr * sleep_factor * sleep_hours
         return BaselineBurnResult(
-            total_kcal=awake_kcal + sleep_kcal,
-            awake_kcal=awake_kcal,
-            sleep_kcal=sleep_kcal,
+            total_kj=awake_kj + sleep_kj,
+            awake_kj=awake_kj,
+            sleep_kj=sleep_kj,
             awake_hours=awake_hours,
             sleep_hours=sleep_hours,
         )
@@ -197,7 +200,7 @@ class MifflinStJeorModel:
         self,
         *,
         local_date: date,
-        rmr_kcal_day: float,
+        rmr_kj_day: float,
         wake_time: time,
         sleep_time: time,
         awake_multiplier: float = 1.20,
@@ -207,7 +210,7 @@ class MifflinStJeorModel:
 
         start_at = datetime.combine(local_date, time.min)
         return self.calculate_baseline_burn(
-            rmr_kcal_day=rmr_kcal_day,
+            rmr_kj_day=rmr_kj_day,
             start_at=start_at,
             end_at=start_at + timedelta(days=1),
             wake_time=wake_time,

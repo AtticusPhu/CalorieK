@@ -8,6 +8,8 @@ import sys
 import traceback
 from pathlib import Path
 
+from app.version import APP_DISPLAY_NAME, APP_NAME, APP_VERSION
+
 
 _DLL_DIRECTORY_HANDLES: list[object] = []
 
@@ -27,6 +29,10 @@ def prepare_frozen_qt_dll_paths() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CalorieK 体重热量 K 线")
+    parser.add_argument(
+        "--version", action="version", version=f"{APP_NAME} {APP_VERSION}",
+        help="显示应用版本后退出（不启动 GUI 或访问数据库）",
+    )
     parser.add_argument(
         "--data-dir",
         type=Path,
@@ -63,12 +69,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from app.application import ApplicationContext
     from app.ui.main_window import MainWindow, ensure_initial_profile
+    from app.ui.theme import apply_light_theme
 
     application = QApplication(sys.argv[:1] + (argv or []))
-    application.setApplicationName("CalorieK")
-    application.setApplicationDisplayName("CalorieK · 体重热量 K 线")
-    application.setOrganizationName("CalorieK")
-    application.setStyle("Fusion")
+    application.setApplicationName(APP_NAME)
+    application.setApplicationVersion(APP_VERSION)
+    application.setApplicationDisplayName(APP_DISPLAY_NAME)
+    application.setOrganizationName(APP_NAME)
+    apply_light_theme(application)
 
     try:
         context = ApplicationContext(arguments.data_dir)
@@ -116,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         window.dashboard_page.refresh()
         application.processEvents()
         if window.pages.count() < 5:
-            print("GUI smoke test failed: expected all V1 pages.", file=sys.stderr)
+            print("GUI smoke test failed: expected all application pages.", file=sys.stderr)
             window.close()
             return 1
         print("CalorieK packaged GUI smoke test: OK")

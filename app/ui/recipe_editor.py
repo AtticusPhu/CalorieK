@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from app.energy_units import EnergyUnit, format_energy, normalize_energy_unit
+from .numeric_input import PreciseDoubleSpinBox
+
 from typing import cast
 
 from PySide6.QtCore import QSize, QTimer, Qt, Signal
@@ -11,7 +14,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -47,20 +49,24 @@ def _amount_summary(
     normalization_unit: str | None,
 ) -> str:
     if normalization_unit == "g":
-        return f"{total_weight_g:.1f} g"
+        return f"{total_weight_g:.2f} g"
     if normalization_unit == "ml":
-        return f"{total_volume_ml:.1f} ml"
+        return f"{total_volume_ml:.2f} ml"
     parts = []
     if total_weight_g > 0:
-        parts.append(f"{total_weight_g:.1f} g")
+        parts.append(f"{total_weight_g:.2f} g")
     if total_volume_ml > 0:
-        parts.append(f"{total_volume_ml:.1f} ml")
+        parts.append(f"{total_volume_ml:.2f} ml")
     return " + ".join(parts) or "0"
 
 
 class _NutritionSummary(QFrame):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, unit: EnergyUnit = "kj"
+    ) -> None:
         super().__init__(parent)
+        self._energy_unit = normalize_energy_unit(unit)
+        self._nutrition: NutritionDTO | None = None
         self.setObjectName("card")
         self.setAccessibleName("食谱营养汇总")
         self._labels: dict[str, QLabel] = {}
@@ -72,12 +78,12 @@ class _NutritionSummary(QFrame):
         for index, (key, caption) in enumerate(
             (
                 ("weight", "总重量"),
-                ("kcal", "总热量"),
+                ("energy", "总能量"),
                 ("protein", "蛋白质"),
                 ("fat", "脂肪"),
                 ("carb", "碳水"),
                 ("fiber", "膳食纤维"),
-                ("per100", "每 100g 热量"),
+                ("per100", "每 100g 能量"),
                 ("per100_macros", "每 100g 宏量"),
             )
         ):
@@ -95,7 +101,12 @@ class _NutritionSummary(QFrame):
             cell.addWidget(value)
             grid.addLayout(cell, row, column)
 
+    def set_display_unit(self, unit: EnergyUnit) -> None:
+        self._energy_unit = normalize_energy_unit(unit)
+        self.set_nutrition(self._nutrition)
+
     def set_nutrition(self, nutrition: NutritionDTO | None) -> None:
+        self._nutrition = nutrition
         if nutrition is None:
             for label in self._labels.values():
                 label.setText("--")
@@ -115,26 +126,28 @@ class _NutritionSummary(QFrame):
                 nutrition.normalization_unit,
             )
         )
-        self._labels["kcal"].setText(f"{nutrition.kcal:.0f} kcal")
-        self._labels["protein"].setText(f"{nutrition.protein_g:.1f} g")
-        self._labels["fat"].setText(f"{nutrition.fat_g:.1f} g")
-        self._labels["carb"].setText(f"{nutrition.carb_g:.1f} g")
-        self._labels["fiber"].setText(f"{nutrition.fiber_g:.1f} g")
+        self._labels["energy"].setText(format_energy(nutrition.kj, self._energy_unit))
+        self._labels["protein"].setText(f"{nutrition.protein_g:.2f} g")
+        self._labels["fat"].setText(f"{nutrition.fat_g:.2f} g")
+        self._labels["carb"].setText(f"{nutrition.carb_g:.2f} g")
+        self._labels["fiber"].setText(f"{nutrition.fiber_g:.2f} g")
         if nutrition.normalization_unit is None:
-            self._captions["per100"].setText("每 100 单位热量")
+            self._captions["per100"].setText("每 100 单位能量")
             self._captions["per100_macros"].setText("每 100 单位宏量")
             self._labels["per100"].setText("不适用于 g/ml 混合食谱")
             self._labels["per100_macros"].setText("请按整份比例记录摄入")
         else:
             basis = nutrition.normalization_unit
-            self._captions["per100"].setText(f"每 100{basis} 热量")
+            self._captions["per100"].setText(f"每 100{basis} 能量")
             self._captions["per100_macros"].setText(f"每 100{basis} 宏量")
-            self._labels["per100"].setText(f"{nutrition.per_100g_kcal:.0f} kcal")
+            self._labels["per100"].setText(
+                format_energy(nutrition.per_100g_kj, self._energy_unit)
+            )
             self._labels["per100_macros"].setText(
-                f"蛋白 {nutrition.per_100g_protein_g:.1f} · "
-                f"脂肪 {nutrition.per_100g_fat_g:.1f} · "
-                f"碳水 {nutrition.per_100g_carb_g:.1f} · "
-                f"纤维 {nutrition.per_100g_fiber_g:.1f} g"
+                f"蛋白 {nutrition.per_100g_protein_g:.2f} · "
+                f"脂肪 {nutrition.per_100g_fat_g:.2f} · "
+                f"碳水 {nutrition.per_100g_carb_g:.2f} · "
+                f"纤维 {nutrition.per_100g_fiber_g:.2f} g"
             )
         amount_text = _amount_summary(
             nutrition.total_weight_g,
@@ -142,7 +155,7 @@ class _NutritionSummary(QFrame):
             nutrition.normalization_unit,
         )
         self.setAccessibleDescription(
-            f"合计用量 {amount_text}，总热量 {nutrition.kcal:.0f} 千卡"
+            f"合计用量 {amount_text}，总能量 {format_energy(nutrition.kj, self._energy_unit)}"
         )
 
 
@@ -158,6 +171,7 @@ class RecipeEditorDialog(QDialog):
         super().__init__(parent)
         self._context = context
         self._recipe = recipe
+        self._energy_unit = context.get_energy_display_unit()
         self._items = list(recipe.items if recipe else ())
         self.saved_recipe: RecipeDetailDTO | None = None
         self.setWindowTitle("编辑食谱" if recipe and recipe.recipe_id else "新建食谱")
@@ -188,9 +202,9 @@ class RecipeEditorDialog(QDialog):
         self.food_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.food_combo.setAccessibleName("选择食谱原料")
         self.food_combo.currentIndexChanged.connect(self._food_changed)
-        self.amount_spin = QDoubleSpinBox()
+        self.amount_spin = PreciseDoubleSpinBox()
         self.amount_spin.setRange(0.1, 100000.0)
-        self.amount_spin.setDecimals(1)
+        self.amount_spin.setDecimals(2)
         self.amount_spin.setValue(100.0)
         self.amount_spin.setSuffix(" g")
         self.amount_spin.setAccessibleName("原料用量")
@@ -222,7 +236,7 @@ class RecipeEditorDialog(QDialog):
         self.ingredients.setAccessibleName("食谱原料列表")
         self.ingredients.itemSelectionChanged.connect(self._ingredient_selected)
 
-        self.nutrition = _NutritionSummary()
+        self.nutrition = _NutritionSummary(unit=self._energy_unit)
         self.preview_status = QLabel("")
         self.preview_status.setObjectName("muted")
         self.preview_status.setWordWrap(True)
@@ -335,7 +349,7 @@ class RecipeEditorDialog(QDialog):
             self.ingredients.insertRow(row)
             name_item = QTableWidgetItem(item.food_name)
             name_item.setData(Qt.ItemDataRole.UserRole, item)
-            amount_item = QTableWidgetItem(f"{item.amount_g:.1f} {item.unit}")
+            amount_item = QTableWidgetItem(f"{item.amount_g:.2f} {item.unit}")
             amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.ingredients.setItem(row, 0, name_item)
             self.ingredients.setItem(row, 1, amount_item)
@@ -396,6 +410,7 @@ class RecipeLibraryPage(QWidget):
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._context = context
+        self._energy_unit = context.get_energy_display_unit()
         self._loaded = False
         self._detail: RecipeDetailDTO | None = None
         self.setObjectName("appRoot")
@@ -440,7 +455,7 @@ class RecipeLibraryPage(QWidget):
         self.detail_items.verticalHeader().setVisible(False)
         self.detail_items.horizontalHeader().setStretchLastSection(True)
         self.detail_items.setAccessibleName("食谱原料详情")
-        self.nutrition = _NutritionSummary()
+        self.nutrition = _NutritionSummary(unit=self._energy_unit)
 
         detail_card = QFrame()
         detail_card.setObjectName("card")
@@ -497,6 +512,7 @@ class RecipeLibraryPage(QWidget):
     def refresh(self) -> None:
         selected_id = self.selected_summary().recipe_id if self.selected_summary() else None
         try:
+            self._energy_unit = self._context.get_energy_display_unit()
             recipes = self._context.list_recipes(
                 self.search_edit.text().strip(),
                 include_inactive=self.include_inactive.isChecked(),
@@ -504,6 +520,7 @@ class RecipeLibraryPage(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "食谱未刷新", f"无法读取食谱库。\n\n{exc}")
             return
+        self.nutrition.set_display_unit(self._energy_unit)
         self.recipe_list.clear()
         row_to_restore = -1
         for index, recipe in enumerate(recipes):
@@ -511,7 +528,7 @@ class RecipeLibraryPage(QWidget):
             item = QListWidgetItem(
                 f"{recipe.name}\n"
                 f"{_amount_summary(recipe.total_weight_g, recipe.total_volume_ml, recipe.normalization_unit)}"
-                f" · {recipe.total_kcal:.0f} kcal{state}"
+                f" · {format_energy(recipe.total_kj, self._energy_unit)}{state}"
             )
             item.setData(Qt.ItemDataRole.UserRole, recipe)
             item.setToolTip(item.text())
@@ -552,7 +569,7 @@ class RecipeLibraryPage(QWidget):
             self.detail_items.insertRow(row)
             self.detail_items.setItem(row, 0, QTableWidgetItem(ingredient.food_name))
             amount = QTableWidgetItem(
-                f"{ingredient.amount_g:.1f} {ingredient.unit}"
+                f"{ingredient.amount_g:.2f} {ingredient.unit}"
             )
             amount.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.detail_items.setItem(row, 1, amount)
@@ -614,7 +631,7 @@ class RecipeLibraryPage(QWidget):
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().showEvent(event)
-        if not self._loaded:
+        if not self._loaded or self._energy_unit != self._context.get_energy_display_unit():
             self.refresh()
 
 

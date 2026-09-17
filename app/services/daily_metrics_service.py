@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from math import isfinite
 from typing import Any, Iterable
 
 from app.db.database import Database, normalize_date, now_iso
+from app.energy_units import DEFAULT_KJ_PER_KG
 from app.models.calibration import (
     CalibrationDay,
     CalibrationResult,
@@ -48,9 +50,9 @@ def iter_days(start: date, end: date) -> Iterable[date]:
 @dataclass(frozen=True, slots=True)
 class DailyFacts:
     day: date
-    intake_kcal: float
-    exercise_kcal: float
-    baseline_kcal: float
+    intake_kj: float
+    exercise_kj: float
+    baseline_kj: float
     measurements: tuple[WeightMeasurement, ...]
     events: tuple[EnergyEvent, ...]
 
@@ -68,15 +70,15 @@ class DailyMetricsService:
         self.db = database
         self.profile_service = ProfileService(database)
         self.metabolism = MifflinStJeorModel()
-        kcal_per_kg = self._setting_float("kcal_per_kg", 7700.0)
-        self.weight_model = SimpleEnergyWeightModel(kcal_per_kg=kcal_per_kg)
+        kj_per_kg = self._setting_float("kj_per_kg", DEFAULT_KJ_PER_KG)
+        self.weight_model = SimpleEnergyWeightModel(kj_per_kg=kj_per_kg)
         self.ohlc = OHLCGenerator(weight_model=self.weight_model)
         self.calibration = GridSearchCalibrationEngine(weight_model=self.weight_model)
         self.projection = DefaultDailyProjectionService(weight_model=self.weight_model)
 
     def refresh_model_settings(self) -> None:
-        kcal_per_kg = self._setting_float("kcal_per_kg", 7700.0)
-        self.weight_model = SimpleEnergyWeightModel(kcal_per_kg=kcal_per_kg)
+        kj_per_kg = self._setting_float("kj_per_kg", DEFAULT_KJ_PER_KG)
+        self.weight_model = SimpleEnergyWeightModel(kj_per_kg=kj_per_kg)
         self.ohlc = OHLCGenerator(weight_model=self.weight_model)
         self.calibration = GridSearchCalibrationEngine(weight_model=self.weight_model)
         self.projection = DefaultDailyProjectionService(weight_model=self.weight_model)
@@ -89,7 +91,7 @@ class DailyMetricsService:
             value = float(raw)
         except ValueError:
             return default
-        return value if value > 0 else default
+        return value if isfinite(value) and value > 0 else default
 
     def _first_actual_date(self) -> date | None:
         with self.db.connection() as connection:
@@ -152,7 +154,7 @@ class DailyMetricsService:
                     f"{cursor.date().isoformat()} 没有可用的用户资料版本"
                 )
             result = self.metabolism.calculate_baseline_burn(
-                rmr_kcal_day=self._rmr(cursor.date(), weight_kg),
+                rmr_kj_day=self._rmr(cursor.date(), weight_kg),
                 start_at=cursor,
                 end_at=boundary,
                 wake_time=time.fromisoformat(revision["wake_time"]),
@@ -160,7 +162,7 @@ class DailyMetricsService:
                 awake_multiplier=float(revision["awake_multiplier"]),
                 sleep_multiplier=float(revision["sleep_multiplier"]),
             )
-            total += result.total_kcal
+            total += result.total_kj
             cursor = boundary
         return total
 
@@ -191,13 +193,13 @@ class DailyMetricsService:
                 (day.isoformat(),),
             ).fetchall()
 
-        intake_kcal = sum(float(row["kcal_snapshot"]) for row in intake_rows)
-        exercise_kcal = sum(float(row["active_kcal"]) for row in exercise_rows)
+        intake_kj = sum(float(row["kj_snapshot"]) for row in intake_rows)
+        exercise_kj = sum(float(row["active_kj"]) for row in exercise_rows)
         events = tuple(
             [
                 EnergyEvent(
                     occurred_at=parse_local_datetime(row["occurred_at"]),
-                    kcal=float(row["kcal_snapshot"]),
+                    kj=float(row["kj_snapshot"]),
                     event_type=EnergyEventType.INTAKE,
                     name=str(row["name_snapshot"]),
                 )
@@ -206,7 +208,7 @@ class DailyMetricsService:
             + [
                 EnergyEvent(
                     occurred_at=parse_local_datetime(row["occurred_at"]),
-                    kcal=float(row["active_kcal"]),
+                    kj=float(row["active_kj"]),
                     event_type=EnergyEventType.EXERCISE,
                     name=str(row["name_snapshot"]),
                 )
@@ -224,9 +226,9 @@ class DailyMetricsService:
         )
         return DailyFacts(
             day=day,
-            intake_kcal=intake_kcal,
-            exercise_kcal=exercise_kcal,
-            baseline_kcal=self._day_baseline(day, float(reference["weight_kg"])),
+            intake_kj=intake_kj,
+            exercise_kj=exercise_kj,
+            baseline_kj=self._day_baseline(day, float(reference["weight_kg"])),
             measurements=measurements,
             events=events,
         )
@@ -258,9 +260,9 @@ class DailyMetricsService:
             calibration_days.append(
                 CalibrationDay(
                     day=day_value,
-                    intake_kcal=facts.intake_kcal,
-                    baseline_kcal=facts.baseline_kcal,
-                    exercise_kcal=facts.exercise_kcal,
+                    intake_kj=facts.intake_kj,
+                    baseline_kj=facts.baseline_kj,
+                    exercise_kj=facts.exercise_kj,
                     actual_weight_kg=weight_by_date.get(day_value.isoformat()),
                 )
             )
@@ -277,7 +279,7 @@ class DailyMetricsService:
                     """
                     INSERT INTO calibration_runs(
                         window_start, window_end, weight_sample_count, days_span,
-                        calibration_kcal_day, rmse, model_version, created_at
+                        calibration_kj_day, rmse, model_version, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -287,7 +289,7 @@ class DailyMetricsService:
                         end_day.isoformat(),
                         result.weight_sample_count,
                         result.days_span,
-                        result.calibration_kcal_day,
+                        result.calibration_kj_day,
                         result.rmse_kg,
                         result.model_version,
                         now_iso(),
@@ -374,11 +376,11 @@ class DailyMetricsService:
                     previous_close_kg=previous_close,
                     measurements=facts.measurements,
                     events=facts.events,
-                    baseline_kcal=facts.baseline_kcal,
-                    calibration_kcal_day=calibration.calibration_kcal_day,
+                    baseline_kj=facts.baseline_kj,
+                    calibration_kj_day=calibration.calibration_kj_day,
                 )
             )
-            total_burn = facts.baseline_kcal + facts.exercise_kcal
+            total_burn = facts.baseline_kj + facts.exercise_kj
             rows.append(
                 {
                     "date": current_day.isoformat(),
@@ -389,13 +391,13 @@ class DailyMetricsService:
                     "open_source": result.open_source.value,
                     "close_source": result.close_source.value,
                     "actual_weight_count": result.actual_weight_count,
-                    "intake_kcal": facts.intake_kcal,
-                    "baseline_kcal": facts.baseline_kcal,
-                    "exercise_kcal": facts.exercise_kcal,
-                    "total_burn_kcal": total_burn,
-                    "balance_kcal": facts.intake_kcal - total_burn,
+                    "intake_kj": facts.intake_kj,
+                    "baseline_kj": facts.baseline_kj,
+                    "exercise_kj": facts.exercise_kj,
+                    "total_burn_kj": total_burn,
+                    "balance_kj": facts.intake_kj - total_burn,
                     "predicted_close_kg": result.predicted_close_kg,
-                    "calibration_kcal": calibration.calibration_kcal_day,
+                    "calibration_kj": calibration.calibration_kj_day,
                 }
             )
             previous_close = result.close_kg
@@ -412,7 +414,7 @@ class DailyMetricsService:
                     """
                     INSERT INTO calibration_runs(
                         window_start, window_end, weight_sample_count, days_span,
-                        calibration_kcal_day, rmse, model_version, created_at
+                        calibration_kj_day, rmse, model_version, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -420,7 +422,7 @@ class DailyMetricsService:
                         window_end.isoformat(),
                         calibration.weight_sample_count,
                         calibration.days_span,
-                        calibration.calibration_kcal_day,
+                        calibration.calibration_kj_day,
                         calibration.rmse_kg,
                         calibration.model_version,
                         timestamp,
@@ -432,14 +434,14 @@ class DailyMetricsService:
                     INSERT INTO daily_metrics_cache(
                         date, open_kg, high_kg, low_kg, close_kg,
                         open_source, close_source, actual_weight_count,
-                        intake_kcal, baseline_kcal, exercise_kcal, total_burn_kcal,
-                        balance_kcal, predicted_close_kg, calibration_kcal,
+                        intake_kj, baseline_kj, exercise_kj, total_burn_kj,
+                        balance_kj, predicted_close_kg, calibration_kj,
                         calculation_version, calculated_at, is_dirty
                     ) VALUES (
                         :date, :open_kg, :high_kg, :low_kg, :close_kg,
                         :open_source, :close_source, :actual_weight_count,
-                        :intake_kcal, :baseline_kcal, :exercise_kcal, :total_burn_kcal,
-                        :balance_kcal, :predicted_close_kg, :calibration_kcal,
+                        :intake_kj, :baseline_kj, :exercise_kj, :total_burn_kj,
+                        :balance_kj, :predicted_close_kg, :calibration_kj,
                         :calculation_version, :calculated_at, 0
                     )
                     ON CONFLICT(date) DO UPDATE SET
@@ -448,13 +450,13 @@ class DailyMetricsService:
                         open_source=excluded.open_source,
                         close_source=excluded.close_source,
                         actual_weight_count=excluded.actual_weight_count,
-                        intake_kcal=excluded.intake_kcal,
-                        baseline_kcal=excluded.baseline_kcal,
-                        exercise_kcal=excluded.exercise_kcal,
-                        total_burn_kcal=excluded.total_burn_kcal,
-                        balance_kcal=excluded.balance_kcal,
+                        intake_kj=excluded.intake_kj,
+                        baseline_kj=excluded.baseline_kj,
+                        exercise_kj=excluded.exercise_kj,
+                        total_burn_kj=excluded.total_burn_kj,
+                        balance_kj=excluded.balance_kj,
                         predicted_close_kg=excluded.predicted_close_kg,
-                        calibration_kcal=excluded.calibration_kcal,
+                        calibration_kj=excluded.calibration_kj,
                         calculation_version=excluded.calculation_version,
                         calculated_at=excluded.calculated_at, is_dirty=0
                     """,
@@ -550,7 +552,7 @@ class DailyMetricsService:
                 (anchor_at.date().isoformat(), current.date().isoformat()),
             ).fetchall()
             cache = connection.execute(
-                "SELECT calibration_kcal FROM daily_metrics_cache WHERE date = ?",
+                "SELECT calibration_kj FROM daily_metrics_cache WHERE date = ?",
                 (current.date().isoformat(),),
             ).fetchone()
 
@@ -561,7 +563,7 @@ class DailyMetricsService:
                 events.append(
                     EnergyEvent(
                         occurred_at=occurred,
-                        kcal=float(row["kcal_snapshot"]),
+                        kj=float(row["kj_snapshot"]),
                         event_type=EnergyEventType.INTAKE,
                         name=str(row["name_snapshot"]),
                     )
@@ -572,7 +574,7 @@ class DailyMetricsService:
                 events.append(
                     EnergyEvent(
                         occurred_at=occurred,
-                        kcal=float(row["active_kcal"]),
+                        kj=float(row["active_kj"]),
                         event_type=EnergyEventType.EXERCISE,
                         name=str(row["name_snapshot"]),
                     )
@@ -580,7 +582,7 @@ class DailyMetricsService:
         weight = float(actual["weight_kg"])
         midnight = datetime.combine(current.date(), time.min)
         next_midnight = midnight + timedelta(days=1)
-        calibration_kcal = float(cache[0]) if cache is not None else 0.0
+        calibration_kj = float(cache[0]) if cache is not None else 0.0
         return self.projection.calculate_today_projection(
             DailyProjectionInput(
                 day=current.date(),
@@ -588,16 +590,16 @@ class DailyMetricsService:
                 latest_actual_weight_kg=weight,
                 latest_actual_at=anchor_at,
                 events=tuple(events),
-                baseline_burn_since_anchor_kcal=self._baseline_interval(
+                baseline_burn_since_anchor_kj=self._baseline_interval(
                     anchor_at, current, weight
                 ),
-                remaining_baseline_burn_kcal=self._baseline_interval(
+                remaining_baseline_burn_kj=self._baseline_interval(
                     current, next_midnight, weight
                 ),
-                today_baseline_burn_elapsed_kcal=self._baseline_interval(
+                today_baseline_burn_elapsed_kj=self._baseline_interval(
                     midnight, current, weight
                 ),
-                calibration_kcal_day=calibration_kcal,
+                calibration_kj_day=calibration_kj,
                 calibration_days_from_anchor_to_end=(
                     next_midnight - anchor_at
                 ).total_seconds()

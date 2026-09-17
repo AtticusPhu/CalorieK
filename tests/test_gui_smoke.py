@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from datetime import date, time
 
+from app.energy_units import kcal_to_kj
+from app.version import APP_DISPLAY_NAME
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
@@ -45,7 +48,7 @@ class GuiSmokeTests(unittest.TestCase):
             self.qt_app.processEvents()
             window.dashboard_page.refresh()
             self.qt_app.processEvents()
-            self.assertIn("CalorieK", window.windowTitle())
+            self.assertEqual(window.windowTitle(), APP_DISPLAY_NAME)
             self.assertEqual(window.pages.count(), 5)
             self.assertTrue(window.dashboard_page.actual_card.value.text().endswith("kg"))
             window.exercise_library_page.refresh()
@@ -74,7 +77,7 @@ class GuiSmokeTests(unittest.TestCase):
                 name="GUI测试饮品",
                 category="其它",
                 basis_unit="ml",
-                kcal=30.0,
+                kj=kcal_to_kj(30.0),
                 default_serving=200.0,
             )
             dialog = FoodDialog(context)
@@ -101,7 +104,7 @@ class GuiSmokeTests(unittest.TestCase):
             )
             self.assertEqual(event["amount"], 2.0)
             self.assertEqual(event["unit"], "serving")
-            self.assertAlmostEqual(float(event["kcal_snapshot"]), 120.0)
+            self.assertAlmostEqual(float(event["kj_snapshot"]), kcal_to_kj(120.0))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import date, datetime, time, timedelta
+from math import isfinite
 import os
 from pathlib import Path
 import sqlite3
@@ -11,6 +12,7 @@ from typing import Any, Sequence
 
 from app.color_modes import candle_palette, treemap_palette
 from app.db.database import Database
+from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit, format_energy, kcal_to_kj, normalize_energy_unit
 from app.paths import database_path, ensure_data_dir, save_data_dir_preference
 from app.services.backup_service import BackupService
 from app.services.daily_metrics_service import DailyMetricsService, parse_local_datetime
@@ -46,10 +48,10 @@ from app.ui.context import (
 
 
 DEFAULT_EXERCISES: tuple[tuple[str, float, float], ...] = (
-    ("跑步", 30.0, 300.0),
-    ("骑行", 45.0, 300.0),
-    ("快走", 45.0, 180.0),
-    ("力量训练", 45.0, 220.0),
+    ("跑步", 30.0, kcal_to_kj(300.0)),
+    ("骑行", 45.0, kcal_to_kj(300.0)),
+    ("快走", 45.0, kcal_to_kj(180.0)),
+    ("力量训练", 45.0, kcal_to_kj(220.0)),
 )
 
 
@@ -76,11 +78,11 @@ class ApplicationContext:
     def _seed_exercise_shortcuts(self) -> None:
         if self.exercises.list_exercise_types(include_inactive=True):
             return
-        for name, duration, kcal in DEFAULT_EXERCISES:
+        for name, duration, kj in DEFAULT_EXERCISES:
             self.exercises.create_exercise_type(
                 name=name,
                 default_duration_min=duration,
-                default_active_kcal=kcal,
+                default_active_kj=kj,
             )
 
     def has_profile(self) -> bool:
@@ -110,7 +112,7 @@ class ApplicationContext:
             brand=str(row.get("brand") or ""),
             basis_amount=float(row["basis_amount"]),
             basis_unit=str(row["basis_unit"]),  # type: ignore[arg-type]
-            kcal=float(row["kcal"]),
+            kj=float(row["kj"]),
             protein_g=float(row["protein_g"]),
             fat_g=float(row["fat_g"]),
             carb_g=float(row["carb_g"]),
@@ -143,8 +145,8 @@ class ApplicationContext:
             source_id=int(row["id"]),
             name=str(row["name"]),
             category=str(row["category"]),
-            detail=f"每 {row['basis_amount']:g}{row['basis_unit']} · {row['kcal']:g} kcal",
-            kcal_reference=float(row["kcal"]) * factor,
+            detail=f"每 {row['basis_amount']:.2f}{row['basis_unit']} · {format_energy(row['kj'], self.get_energy_display_unit())}",
+            kj_reference=float(row["kj"]) * factor,
             protein_g=float(row["protein_g"]) * factor,
             fat_g=float(row["fat_g"]) * factor,
             carb_g=float(row["carb_g"]) * factor,
@@ -159,15 +161,15 @@ class ApplicationContext:
         nutrition = self.recipes.calculate_nutrition(int(row["id"]))
         normalization_unit = nutrition.get("normalization_unit")
         if normalization_unit == "g":
-            amount_detail = f"总重 {nutrition['total_weight_g']:.0f} g"
+            amount_detail = f"总重 {nutrition['total_weight_g']:.2f} g"
             allowed_units = ("g", "ratio_percent")
         elif normalization_unit == "ml":
-            amount_detail = f"总体积 {nutrition['total_volume_ml']:.0f} ml"
+            amount_detail = f"总体积 {nutrition['total_volume_ml']:.2f} ml"
             allowed_units = ("ml", "ratio_percent")
         else:
             amount_detail = (
-                f"合计 {nutrition['total_weight_g']:.0f} g + "
-                f"{nutrition['total_volume_ml']:.0f} ml"
+                f"合计 {nutrition['total_weight_g']:.2f} g + "
+                f"{nutrition['total_volume_ml']:.2f} ml"
             )
             allowed_units = ("ratio_percent",)
         has_reference = normalization_unit in {"g", "ml"}
@@ -176,8 +178,8 @@ class ApplicationContext:
             source_id=int(row["id"]),
             name=str(row["name"]),
             category="我的食谱",
-            detail=f"{amount_detail} · 合计 {nutrition['kcal']:.0f} kcal",
-            kcal_reference=(float(nutrition["per_100g_kcal"]) if has_reference else None),
+            detail=f"{amount_detail} · 合计 {format_energy(nutrition['kj'], self.get_energy_display_unit())}",
+            kj_reference=(float(nutrition["per_100g_kj"]) if has_reference else None),
             protein_g=(float(nutrition["per_100g_protein_g"]) if has_reference else None),
             fat_g=(float(nutrition["per_100g_fat_g"]) if has_reference else None),
             carb_g=(float(nutrition["per_100g_carb_g"]) if has_reference else None),
@@ -289,9 +291,9 @@ class ApplicationContext:
                     exercise_type_id=int(row["id"]),
                     name=str(row["name"]),
                     default_duration_min=float(row["default_duration_min"] or 0),
-                    default_active_kcal=float(row["default_active_kcal"] or 0),
+                    default_active_kj=float(row["default_active_kj"] or 0),
                     last_duration_min=last["duration_min"],
-                    last_active_kcal=last["active_kcal"],
+                    last_active_kj=last["active_kj"],
                     favorite=bool(row["favorite"]),
                     active=bool(row["active"]),
                 )
@@ -302,7 +304,7 @@ class ApplicationContext:
         self.exercises.record_exercise(
             event.exercise_type_id,
             duration_min=event.duration_min,
-            active_kcal=event.active_kcal,
+            active_kj=event.active_kj,
             occurred_at=event.occurred_at,
             note=event.note,
         )
@@ -310,14 +312,14 @@ class ApplicationContext:
 
     @staticmethod
     def _exercise_type_dto(row: dict, last: dict[str, float | None] | None = None) -> ExerciseTypeDTO:
-        last_values = last or {"duration_min": None, "active_kcal": None}
+        last_values = last or {"duration_min": None, "active_kj": None}
         return ExerciseTypeDTO(
             exercise_type_id=int(row["id"]),
             name=str(row["name"]),
             default_duration_min=float(row["default_duration_min"] or 0),
-            default_active_kcal=float(row["default_active_kcal"] or 0),
+            default_active_kj=float(row["default_active_kj"] or 0),
             last_duration_min=last_values.get("duration_min"),
-            last_active_kcal=last_values.get("active_kcal"),
+            last_active_kj=last_values.get("active_kj"),
             favorite=bool(row["favorite"]),
             active=bool(row["active"]),
         )
@@ -339,7 +341,7 @@ class ApplicationContext:
         values = dict(
             name=exercise.name,
             default_duration_min=exercise.default_duration_min,
-            default_active_kcal=exercise.default_active_kcal,
+            default_active_kj=exercise.default_active_kj,
             favorite=exercise.favorite,
         )
         if exercise.exercise_type_id is None:
@@ -389,7 +391,7 @@ class ApplicationContext:
             brand=food.brand or None,
             basis_amount=food.basis_amount,
             basis_unit=food.basis_unit,
-            kcal=food.kcal,
+            kj=food.kj,
             protein_g=food.protein_g,
             fat_g=food.fat_g,
             carb_g=food.carb_g,
@@ -441,12 +443,12 @@ class ApplicationContext:
             total_weight_g=float(values.get("total_weight_g", values.get("total_amount", 0))),
             total_volume_ml=float(values.get("total_volume_ml", 0)),
             normalization_unit=values.get("normalization_unit", "g"),  # type: ignore[arg-type]
-            kcal=float(values.get("kcal", 0)),
+            kj=float(values.get("kj", 0)),
             protein_g=float(values.get("protein_g", 0)),
             fat_g=float(values.get("fat_g", 0)),
             carb_g=float(values.get("carb_g", 0)),
             fiber_g=float(values.get("fiber_g", 0)),
-            per_100g_kcal=float(values.get("per_100g_kcal", 0)),
+            per_100g_kj=float(values.get("per_100g_kj", 0)),
             per_100g_protein_g=float(values.get("per_100g_protein_g", 0)),
             per_100g_fat_g=float(values.get("per_100g_fat_g", 0)),
             per_100g_carb_g=float(values.get("per_100g_carb_g", 0)),
@@ -463,7 +465,7 @@ class ApplicationContext:
             try:
                 nutrition = self.recipes.calculate_nutrition(int(row["id"]))
             except ValueError:
-                nutrition = {"total_weight_g": 0.0, "kcal": 0.0}
+                nutrition = {"total_weight_g": 0.0, "kj": 0.0}
             result.append(
                 RecipeSummaryDTO(
                     recipe_id=int(row["id"]),
@@ -471,7 +473,7 @@ class ApplicationContext:
                     total_weight_g=float(nutrition.get("total_weight_g", 0)),
                     total_volume_ml=float(nutrition.get("total_volume_ml", 0)),
                     normalization_unit=nutrition.get("normalization_unit", "g"),  # type: ignore[arg-type]
-                    total_kcal=float(nutrition.get("kcal", 0)),
+                    total_kj=float(nutrition.get("kj", 0)),
                     active=bool(row["active"]),
                 )
             )
@@ -484,7 +486,7 @@ class ApplicationContext:
         totals = {
             "total_weight_g": 0.0,
             "total_volume_ml": 0.0,
-            "kcal": 0.0,
+            "kj": 0.0,
             "protein_g": 0.0,
             "fat_g": 0.0,
             "carb_g": 0.0,
@@ -504,7 +506,7 @@ class ApplicationContext:
                 totals["total_weight_g"] += item.amount_g
             else:
                 totals["total_volume_ml"] += item.amount_g
-            totals["kcal"] += nutrition["kcal"]
+            totals["kj"] += nutrition["kj"]
             totals["protein_g"] += nutrition["protein"]
             totals["fat_g"] += nutrition["fat"]
             totals["carb_g"] += nutrition["carb"]
@@ -523,7 +525,7 @@ class ApplicationContext:
         if normalization_amount > 0:
             totals.update(
                 {
-                    "per_100g_kcal": totals["kcal"] * 100 / normalization_amount,
+                    "per_100g_kj": totals["kj"] * 100 / normalization_amount,
                     "per_100g_protein_g": totals["protein_g"] * 100 / normalization_amount,
                     "per_100g_fat_g": totals["fat_g"] * 100 / normalization_amount,
                     "per_100g_carb_g": totals["carb_g"] * 100 / normalization_amount,
@@ -558,6 +560,9 @@ class ApplicationContext:
         else:
             self.recipes.soft_delete_recipe(recipe_id)
 
+    def get_energy_display_unit(self) -> EnergyUnit:
+        return normalize_energy_unit(self.database.get_setting("energy_display_unit"))
+
     def get_settings(self) -> SettingsDTO:
         profile = self.profile.get_current_profile() or {}
         candle_mode = str(self.database.get_setting("candle_color_mode", "china"))
@@ -573,13 +578,13 @@ class ApplicationContext:
         except ValueError:
             treemap_mode = "intake_red"
         try:
-            kcal_per_kg = float(
-                self.database.get_setting("kcal_per_kg", "7700") or 7700
+            kj_per_kg = float(
+                self.database.get_setting("kj_per_kg", str(DEFAULT_KJ_PER_KG)) or DEFAULT_KJ_PER_KG
             )
         except (TypeError, ValueError):
-            kcal_per_kg = 7700.0
-        if kcal_per_kg <= 0:
-            kcal_per_kg = 7700.0
+            kj_per_kg = DEFAULT_KJ_PER_KG
+        if not isfinite(kj_per_kg) or kj_per_kg <= 0:
+            kj_per_kg = DEFAULT_KJ_PER_KG
         return SettingsDTO(
             sex=str(profile.get("gender", "male")),
             birth_date=date.fromisoformat(str(profile.get("birth_date", "1990-01-01"))),
@@ -590,51 +595,78 @@ class ApplicationContext:
             sleep_multiplier=float(profile.get("sleep_multiplier", 0.95)),
             candle_color_mode=candle_mode,  # type: ignore[arg-type]
             treemap_color_mode=treemap_mode,  # type: ignore[arg-type]
-            kcal_per_kg=kcal_per_kg,
+            kj_per_kg=kj_per_kg,
             data_directory=self.data_dir,
+            energy_display_unit=self.get_energy_display_unit(),
         )
 
     @staticmethod
     def _validate_settings(settings: SettingsDraft) -> None:
-        if settings.kcal_per_kg <= 0:
-            raise ValueError("kcal/kg 必须大于 0")
+        if settings.energy_display_unit not in ("kj", "kcal"):
+            raise ValueError("能量显示单位必须为 kj 或 kcal")
+        if not isfinite(settings.kj_per_kg) or settings.kj_per_kg <= 0:
+            raise ValueError("kJ/kg 必须为大于 0 的有限值")
         candle_palette(settings.candle_color_mode)
         treemap_palette("intake", settings.treemap_color_mode)
 
-    def save_settings(self, settings: SettingsDraft) -> None:
+    def save_settings(self, settings: SettingsDraft) -> bool:
         self._validate_settings(settings)
         requested_directory = settings.data_directory.expanduser().resolve()
         if requested_directory != self.data_dir:
             self._relocate_data_with_settings(requested_directory, settings)
-            return
-        self._apply_settings(self.database, settings)
-        self.daily.refresh_model_settings()
-        self.daily.ensure_calculated(date.today())
+            return True
+        model_changed = self._apply_settings(self.database, settings)
+        if model_changed:
+            self.daily.refresh_model_settings()
+            self.daily.ensure_calculated(date.today())
+        return model_changed
 
     @staticmethod
-    def _apply_settings(database: Database, settings: SettingsDraft) -> None:
+    def _apply_settings(database: Database, settings: SettingsDraft) -> bool:
         profile = ProfileService(database)
-        profile.update_profile(
-            effective_from=date.today(),
-            gender=settings.sex,
-            birth_date=settings.birth_date,
-            height_cm=settings.height_cm,
-            wake_time=settings.wake_time.isoformat(timespec="minutes"),
-            sleep_time=settings.sleep_time.isoformat(timespec="minutes"),
-            awake_multiplier=settings.awake_multiplier,
-            sleep_multiplier=settings.sleep_multiplier,
+        current = profile.get_current_profile() or {}
+        # Presentation changes must not create a profile revision, invalidate
+        # caches, or rewrite a high-precision energy-to-weight coefficient.
+        profile_changed = (
+            current.get("gender") != settings.sex
+            or current.get("birth_date") != settings.birth_date.isoformat()
+            or current.get("height_cm") != settings.height_cm
+            or time.fromisoformat(str(current.get("wake_time", "00:00"))) != settings.wake_time
+            or time.fromisoformat(str(current.get("sleep_time", "00:00"))) != settings.sleep_time
+            or current.get("awake_multiplier") != settings.awake_multiplier
+            or current.get("sleep_multiplier") != settings.sleep_multiplier
         )
-        old_kcal = database.get_setting("kcal_per_kg", "7700")
-        database.set_setting("candle_color_mode", settings.candle_color_mode)
-        database.set_setting("treemap_color_mode", settings.treemap_color_mode)
-        database.set_setting("kcal_per_kg", str(settings.kcal_per_kg))
-        if float(old_kcal or 7700) != settings.kcal_per_kg:
+        if profile_changed:
+            profile.update_profile(
+                effective_from=date.today(),
+                gender=settings.sex,
+                birth_date=settings.birth_date,
+                height_cm=settings.height_cm,
+                wake_time=settings.wake_time.isoformat(),
+                sleep_time=settings.sleep_time.isoformat(),
+                awake_multiplier=settings.awake_multiplier,
+                sleep_multiplier=settings.sleep_multiplier,
+            )
+        try:
+            old_kj = float(database.get_setting("kj_per_kg", str(DEFAULT_KJ_PER_KG)) or DEFAULT_KJ_PER_KG)
+        except (TypeError, ValueError):
+            old_kj = None
+        for key, value in (
+            ("candle_color_mode", settings.candle_color_mode),
+            ("treemap_color_mode", settings.treemap_color_mode),
+            ("energy_display_unit", settings.energy_display_unit),
+        ):
+            if database.get_setting(key) != value:
+                database.set_setting(key, value)
+        if old_kj != settings.kj_per_kg:
+            database.set_setting("kj_per_kg", str(settings.kj_per_kg))
             with database.connection() as connection:
                 row = connection.execute(
                     "SELECT MIN(local_date) FROM weight_measurements WHERE active = 1"
                 ).fetchone()
             if row and row[0]:
                 database.mark_dirty(str(row[0]))
+        return profile_changed or old_kj != settings.kj_per_kg
 
     def _relocate_data_with_settings(
         self, destination: Path, settings: SettingsDraft
@@ -714,9 +746,9 @@ class ApplicationContext:
                 high_kg=float(row["high_kg"]),
                 low_kg=float(row["low_kg"]),
                 close_kg=float(row["close_kg"]),
-                intake_kcal=float(row["intake_kcal"]),
-                burn_kcal=float(row["total_burn_kcal"]),
-                balance_kcal=float(row["balance_kcal"]),
+                intake_kj=float(row["intake_kj"]),
+                burn_kj=float(row["total_burn_kj"]),
+                balance_kj=float(row["balance_kj"]),
                 actual_weight_count=int(row["actual_weight_count"]),
                 open_source=str(row["open_source"]),
                 close_source=str(row["close_source"]),
@@ -733,8 +765,8 @@ class ApplicationContext:
             projection = self.daily.calculate_today_projection()
         else:
             projection = None
-        baseline = float(current_row["baseline_kcal"]) if current_row else 0.0
-        treemap_items = self.treemap.build_day(target, baseline_kcal=baseline)
+        baseline = float(current_row["baseline_kj"]) if current_row else 0.0
+        treemap_items = self.treemap.build_day(target, baseline_kj=baseline)
         return DashboardDTO(
             as_of=datetime.now(),
             latest_actual_weight_kg=actual_weight,
@@ -753,37 +785,37 @@ class ApplicationContext:
                     else None
                 )
             ),
-            intake_kcal=(
-                projection.today_intake_kcal
+            intake_kj=(
+                projection.today_intake_kj
                 if projection is not None
-                else (float(current_row["intake_kcal"]) if current_row else 0.0)
+                else (float(current_row["intake_kj"]) if current_row else 0.0)
             ),
-            baseline_kcal=(
-                projection.today_baseline_projected_kcal
+            baseline_kj=(
+                projection.today_baseline_projected_kj
                 if projection is not None
                 else baseline
             ),
-            exercise_kcal=(
-                projection.today_exercise_kcal
+            exercise_kj=(
+                projection.today_exercise_kj
                 if projection is not None
-                else (float(current_row["exercise_kcal"]) if current_row else 0.0)
+                else (float(current_row["exercise_kj"]) if current_row else 0.0)
             ),
-            total_burn_kcal=(
-                projection.today_total_burn_projected_kcal
+            total_burn_kj=(
+                projection.today_total_burn_projected_kj
                 if projection is not None
-                else (float(current_row["total_burn_kcal"]) if current_row else 0.0)
+                else (float(current_row["total_burn_kj"]) if current_row else 0.0)
             ),
-            balance_kcal=(
-                projection.today_balance_kcal
+            balance_kj=(
+                projection.today_balance_kj
                 if projection is not None
-                else (float(current_row["balance_kcal"]) if current_row else 0.0)
+                else (float(current_row["balance_kj"]) if current_row else 0.0)
             ),
             candles=candles,
             treemap_items=tuple(
                 TreemapItemDTO(
                     key=item.key,
                     name=item.name,
-                    kcal=item.kcal,
+                    kj=item.kj,
                     side=item.side,
                     category=item.category,
                     protein_g=item.details.get("protein_g"),
@@ -794,10 +826,10 @@ class ApplicationContext:
                 )
                 for item in treemap_items
             ),
-            calibration_kcal_day=(
-                projection.calibration_kcal_day
+            calibration_kj_day=(
+                projection.calibration_kj_day
                 if projection is not None
-                else (float(current_row["calibration_kcal"]) if current_row else 0.0)
+                else (float(current_row["calibration_kj"]) if current_row else 0.0)
             ),
         )
 

@@ -68,7 +68,7 @@ class FoodService:
         name: str,
         category: str,
         basis_unit: str,
-        kcal: float,
+        kj: float,
         protein_g: float = 0,
         fat_g: float = 0,
         carb_g: float = 0,
@@ -91,8 +91,8 @@ class FoodService:
         nutrients = tuple(
             _finite_number(value, label)
             for value, label in zip(
-                (kcal, protein_g, fat_g, carb_g, fiber_g),
-                ("kcal", "protein_g", "fat_g", "carb_g", "fiber_g"),
+                (kj, protein_g, fat_g, carb_g, fiber_g),
+                ("kj", "protein_g", "fat_g", "carb_g", "fiber_g"),
                 strict=True,
             )
         )
@@ -107,7 +107,7 @@ class FoodService:
                 """
                 INSERT INTO foods(
                     builtin_key, name, category, brand, basis_amount, basis_unit,
-                    kcal, protein_g, fat_g, carb_g, fiber_g, default_serving,
+                    kj, protein_g, fat_g, carb_g, fiber_g, default_serving,
                     is_builtin, is_favorite, user_modified, data_source,
                     source_version, created_at, updated_at, active
                 ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, 1)
@@ -207,7 +207,7 @@ class FoodService:
             "brand",
             "basis_amount",
             "basis_unit",
-            "kcal",
+            "kj",
             "protein_g",
             "fat_g",
             "carb_g",
@@ -241,7 +241,7 @@ class FoodService:
             normalized["basis_amount"] = _finite_number(
                 normalized["basis_amount"], "basis_amount", positive=True
             )
-        for field in ("kcal", "protein_g", "fat_g", "carb_g", "fiber_g"):
+        for field in ("kj", "protein_g", "fat_g", "carb_g", "fiber_g"):
             if field in normalized:
                 normalized[field] = _finite_number(normalized[field], field)
         if "default_serving" in normalized and normalized["default_serving"] is not None:
@@ -424,7 +424,7 @@ class FoodService:
     def _nutrition_for_base_amount(food: dict[str, Any], base_amount: float) -> dict[str, float]:
         factor = float(base_amount) / float(food["basis_amount"])
         return {
-            "kcal": float(food["kcal"]) * factor,
+            "kj": float(food["kj"]) * factor,
             "protein": float(food["protein_g"]) * factor,
             "fat": float(food["fat_g"]) * factor,
             "carb": float(food["carb_g"]) * factor,
@@ -487,7 +487,7 @@ class FoodService:
                 """
                 INSERT INTO intake_events(
                     occurred_at, local_date, source_type, source_id, meal_type,
-                    name_snapshot, amount, unit, kcal_snapshot,
+                    name_snapshot, amount, unit, kj_snapshot,
                     protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
                     note, created_at, updated_at, active
                 ) VALUES (?, ?, 'FOOD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -500,7 +500,7 @@ class FoodService:
                     food["name"],
                     amount_value,
                     unit_value,
-                    nutrients["kcal"],
+                    nutrients["kj"],
                     nutrients["protein"],
                     nutrients["fat"],
                     nutrients["carb"],
@@ -523,7 +523,7 @@ class FoodService:
         name: str,
         amount: float,
         unit: str,
-        kcal: float,
+        kj: float,
         protein_g: float = 0,
         fat_g: float = 0,
         carb_g: float = 0,
@@ -538,8 +538,8 @@ class FoodService:
         values = [
             _finite_number(value, label)
             for value, label in zip(
-                (kcal, protein_g, fat_g, carb_g, fiber_g),
-                ("kcal", "protein_g", "fat_g", "carb_g", "fiber_g"),
+                (kj, protein_g, fat_g, carb_g, fiber_g),
+                ("kj", "protein_g", "fat_g", "carb_g", "fiber_g"),
                 strict=True,
             )
         ]
@@ -552,7 +552,7 @@ class FoodService:
                 """
                 INSERT INTO intake_events(
                     occurred_at, local_date, source_type, source_id, meal_type,
-                    name_snapshot, amount, unit, kcal_snapshot,
+                    name_snapshot, amount, unit, kj_snapshot,
                     protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
                     note, created_at, updated_at, active
                 ) VALUES (?, ?, 'CUSTOM', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -633,7 +633,7 @@ class FoodService:
             connection.execute(
                 """
                 UPDATE intake_events SET occurred_at = ?, local_date = ?, meal_type = ?,
-                    amount = ?, kcal_snapshot = ?, protein_snapshot = ?,
+                    amount = ?, kj_snapshot = ?, protein_snapshot = ?,
                     fat_snapshot = ?, carb_snapshot = ?, fiber_snapshot = ?,
                     note = ?, updated_at = ? WHERE id = ?
                 """,
@@ -642,7 +642,7 @@ class FoodService:
                     local_date,
                     meal_value,
                     amount_value,
-                    float(event["kcal_snapshot"]) * scale,
+                    float(event["kj_snapshot"]) * scale,
                     float(event["protein_snapshot"]) * scale,
                     float(event["fat_snapshot"]) * scale,
                     float(event["carb_snapshot"]) * scale,

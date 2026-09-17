@@ -22,7 +22,7 @@ class DailyProjectionTests(unittest.TestCase):
                 as_of=datetime(2026, 8, 25, 12),
                 latest_actual_weight_kg=None,
                 latest_actual_at=None,
-                remaining_baseline_burn_kcal=1000,
+                remaining_baseline_burn_kj=4184,
             )
         )
         self.assertIsNone(result)
@@ -35,30 +35,30 @@ class DailyProjectionTests(unittest.TestCase):
             latest_actual_at=datetime(2026, 8, 25, 8),
             events=(
                 EnergyEvent(
-                    datetime(2026, 8, 25, 7), 500, EnergyEventType.INTAKE, "before weigh"
+                    datetime(2026, 8, 25, 7), 2092, EnergyEventType.INTAKE, "before weigh"
                 ),
                 EnergyEvent(
-                    datetime(2026, 8, 25, 10), 1000, EnergyEventType.INTAKE, "meal"
+                    datetime(2026, 8, 25, 10), 4184, EnergyEventType.INTAKE, "meal"
                 ),
                 EnergyEvent(
-                    datetime(2026, 8, 25, 11), 300, EnergyEventType.EXERCISE, "run"
+                    datetime(2026, 8, 25, 11), 1255.2, EnergyEventType.EXERCISE, "run"
                 ),
             ),
-            baseline_burn_since_anchor_kcal=400,
-            remaining_baseline_burn_kcal=1000,
-            today_baseline_burn_elapsed_kcal=600,
-            calibration_kcal_day=150,
+            baseline_burn_since_anchor_kj=1673.6,
+            remaining_baseline_burn_kj=4184,
+            today_baseline_burn_elapsed_kj=2510.4,
+            calibration_kj_day=627.6,
             calibration_days_from_anchor_to_end=2 / 3,
         )
         result = self.service.calculate_today_projection(inputs)
         assert result is not None
-        expected_energy = 1000 - 300 - 400 - 1000 - 150 * (2 / 3)
+        expected_energy = 4184 - 1255.2 - 1673.6 - 4184 - 627.6 * (2 / 3)
         self.assertAlmostEqual(
-            result.predicted_close_kg, 70 + expected_energy / 7700
+            result.predicted_close_kg, 70 + expected_energy / 32216.8
         )
-        self.assertAlmostEqual(result.today_intake_kcal, 1500)
-        self.assertAlmostEqual(result.today_exercise_kcal, 300)
-        self.assertAlmostEqual(result.today_total_burn_projected_kcal, 1900)
+        self.assertAlmostEqual(result.today_intake_kj, 6276)
+        self.assertAlmostEqual(result.today_exercise_kj, 1255.2)
+        self.assertAlmostEqual(result.today_total_burn_projected_kj, 7949.6)
 
     def test_positive_delta_always_lowers_prediction(self) -> None:
         common = dict(
@@ -66,12 +66,12 @@ class DailyProjectionTests(unittest.TestCase):
             as_of=datetime(2026, 8, 25, 12),
             latest_actual_weight_kg=70,
             latest_actual_at=datetime(2026, 8, 25, 8),
-            remaining_baseline_burn_kcal=1000,
+            remaining_baseline_burn_kj=4184,
             calibration_days_from_anchor_to_end=1,
         )
         plain = self.service.calculate_today_projection(DailyProjectionInput(**common))
         calibrated = self.service.calculate_today_projection(
-            DailyProjectionInput(**common, calibration_kcal_day=200)
+            DailyProjectionInput(**common, calibration_kj_day=836.8)
         )
         assert plain is not None and calibrated is not None
         self.assertLess(calibrated.predicted_close_kg, plain.predicted_close_kg)

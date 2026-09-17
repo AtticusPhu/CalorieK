@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.db.database import Database
+from app.energy_units import kcal_to_kj
 from app.services.food_service import FoodService
 
 
@@ -85,7 +86,7 @@ class CacheInvalidationTests(unittest.TestCase):
             name="旧午餐",
             amount=1,
             unit="份",
-            kcal=500,
+            kj=kcal_to_kj(500),
             occurred_at=datetime(2026, 8, 20, 12, 0),
             meal_type="LUNCH",
         )

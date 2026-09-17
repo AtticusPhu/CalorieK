@@ -1,4 +1,4 @@
-"""Build kcal-composition data for the dashboard treemap."""
+"""Build kJ-composition data for the dashboard treemap."""
 
 from __future__ import annotations
 
@@ -25,16 +25,16 @@ _MEAL_LABELS = {
 class TreemapItem:
     key: str
     name: str
-    kcal: float
+    kj: float
     side: TreemapSide
     category: str
     details: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def area_weight(self) -> float:
-        """Treemap area is always based on the absolute kcal magnitude."""
+        """Treemap area is always based on the absolute kJ magnitude."""
 
-        return abs(float(self.kcal))
+        return abs(float(self.kj))
 
 
 class TreemapDataService:
@@ -71,7 +71,7 @@ class TreemapDataService:
         self,
         day: date | str,
         *,
-        baseline_kcal: float,
+        baseline_kj: float,
         intake_events: Iterable[Mapping[str, Any]] | None = None,
         exercise_events: Iterable[Mapping[str, Any]] | None = None,
     ) -> tuple[TreemapItem, ...]:
@@ -85,15 +85,15 @@ class TreemapDataService:
 
         items: list[TreemapItem] = []
         for index, event in enumerate(intake_events):
-            kcal = abs(float(event.get("kcal_snapshot", event.get("kcal", 0.0))))
-            if kcal <= 0:
+            kj = abs(float(event.get("kj_snapshot", event.get("kj", 0.0))))
+            if kj <= 0:
                 continue
             meal = str(event.get("meal_type", "OTHER")).upper()
             items.append(
                 TreemapItem(
                     key=f"intake:{event.get('id', index)}",
                     name=str(event.get("name_snapshot", event.get("name", "饮食"))),
-                    kcal=kcal,
+                    kj=kj,
                     side="intake",
                     category=_MEAL_LABELS.get(meal, "其它摄入"),
                     details={
@@ -105,27 +105,27 @@ class TreemapDataService:
                 )
             )
 
-        if baseline_kcal > 0:
+        if baseline_kj > 0:
             items.append(
                 TreemapItem(
                     key="burn:baseline",
                     name="基础及日常活动",
-                    kcal=abs(float(baseline_kcal)),
+                    kj=abs(float(baseline_kj)),
                     side="burn",
                     category="基础及日常活动",
                 )
             )
 
         for index, event in enumerate(exercise_events):
-            kcal = abs(float(event.get("active_kcal", event.get("kcal", 0.0))))
-            if kcal <= 0:
+            kj = abs(float(event.get("active_kj", event.get("kj", 0.0))))
+            if kj <= 0:
                 continue
             name = str(event.get("name_snapshot", event.get("name", "运动")))
             items.append(
                 TreemapItem(
                     key=f"burn:exercise:{event.get('id', index)}",
                     name=name,
-                    kcal=kcal,
+                    kj=kj,
                     side="burn",
                     category=name,
                     details={"duration_min": float(event.get("duration_min", 0.0))},
@@ -134,9 +134,8 @@ class TreemapDataService:
         return tuple(items)
 
     @staticmethod
-    def total_area_kcal(items: Iterable[TreemapItem]) -> float:
+    def total_area_kj(items: Iterable[TreemapItem]) -> float:
         return sum(item.area_weight for item in items)
 
 
 __all__ = ["TreemapDataService", "TreemapItem", "TreemapSide"]
-

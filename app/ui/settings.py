@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDateEdit,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -27,7 +26,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.energy_units import kcal_to_kj, normalize_energy_unit
+
 from .context import SettingsDTO, SettingsDraft, UIContext
+from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
 
 
 _T = TypeVar("_T")
@@ -36,7 +38,7 @@ _T = TypeVar("_T")
 class SettingsPage(QWidget):
     """Edit effective settings and expose safe backup/restore/export actions."""
 
-    settings_saved = Signal()
+    settings_saved = Signal(bool)
     data_restored = Signal()
 
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
@@ -72,9 +74,9 @@ class SettingsPage(QWidget):
         self.birth_edit.setAccessibleName("出生日期")
         profile_form.addRow("出生日期 *", self.birth_edit)
 
-        self.height_spin = QDoubleSpinBox()
+        self.height_spin = PreciseDoubleSpinBox()
         self.height_spin.setRange(80.0, 250.0)
-        self.height_spin.setDecimals(1)
+        self.height_spin.setDecimals(2)
         self.height_spin.setSuffix(" cm")
         self.height_spin.setAccessibleName("身高")
         profile_form.addRow("身高 *", self.height_spin)
@@ -89,24 +91,34 @@ class SettingsPage(QWidget):
         self.sleep_edit.setAccessibleName("通常睡眠时间")
         profile_form.addRow("通常睡眠时间 *", self.sleep_edit)
 
-        self.awake_spin = QDoubleSpinBox()
+        self.awake_spin = PreciseDoubleSpinBox()
         self.awake_spin.setRange(0.50, 3.00)
         self.awake_spin.setDecimals(2)
         self.awake_spin.setSingleStep(0.05)
         self.awake_spin.setAccessibleName("清醒活动系数")
         profile_form.addRow("awake multiplier *", self.awake_spin)
 
-        self.sleep_multiplier_spin = QDoubleSpinBox()
+        self.sleep_multiplier_spin = PreciseDoubleSpinBox()
         self.sleep_multiplier_spin.setRange(0.50, 1.50)
         self.sleep_multiplier_spin.setDecimals(2)
         self.sleep_multiplier_spin.setSingleStep(0.05)
         self.sleep_multiplier_spin.setAccessibleName("睡眠消耗系数")
         profile_form.addRow("sleep multiplier *", self.sleep_multiplier_spin)
 
-        visual_group = QGroupBox("图表颜色")
+        visual_group = QGroupBox("显示单位与图表颜色")
         visual_form = QFormLayout(visual_group)
         visual_form.setHorizontalSpacing(20)
         visual_form.setVerticalSpacing(10)
+
+        self.energy_unit_combo = QComboBox()
+        self.energy_unit_combo.addItem("千焦 (kJ)", "kj")
+        self.energy_unit_combo.addItem("千卡 (kcal)", "kcal")
+        self.energy_unit_combo.setAccessibleName("能量显示与输入单位")
+        visual_form.addRow("能量单位", self.energy_unit_combo)
+        unit_note = QLabel("切换只改变显示与输入单位；内部计算和已保存的能量始终使用 kJ。")
+        unit_note.setObjectName("muted")
+        unit_note.setWordWrap(True)
+        visual_form.addRow("说明", unit_note)
 
         self.candle_mode_combo = QComboBox()
         self.candle_mode_combo.addItem("中国习惯：上涨红、下跌绿", "china")
@@ -123,14 +135,14 @@ class SettingsPage(QWidget):
         model_group = QGroupBox("体重模型")
         model_form = QFormLayout(model_group)
         model_form.setHorizontalSpacing(20)
-        self.kcal_per_kg_spin = QDoubleSpinBox()
-        self.kcal_per_kg_spin.setRange(1000.0, 20000.0)
-        self.kcal_per_kg_spin.setDecimals(0)
-        self.kcal_per_kg_spin.setSingleStep(100.0)
-        self.kcal_per_kg_spin.setSuffix(" kcal/kg")
-        self.kcal_per_kg_spin.setAccessibleName("每千克能量换算")
-        model_form.addRow("能量换算 *", self.kcal_per_kg_spin)
-        model_note = QLabel("V1 使用可配置的简化能量模型；该值只影响重新计算的派生结果。")
+        self.energy_per_kg_spin = EnergySpinBox()
+        self.energy_per_kg_spin.set_kj_range(kcal_to_kj(1000.0), kcal_to_kj(20000.0))
+        self.energy_per_kg_spin.set_kj_single_step(kcal_to_kj(100.0))
+        self.energy_per_kg_spin.set_unit_tail("/kg")
+        self.energy_per_kg_spin.setAccessibleName("每千克能量换算")
+        model_form.addRow("能量换算 *", self.energy_per_kg_spin)
+        self.energy_unit_combo.currentIndexChanged.connect(self._energy_unit_changed)
+        model_note = QLabel("当前版本使用可配置的简化能量模型；该值只影响重新计算的派生结果。")
         model_note.setObjectName("muted")
         model_note.setWordWrap(True)
         model_form.addRow("说明", model_note)
@@ -230,13 +242,27 @@ class SettingsPage(QWidget):
         self.sleep_multiplier_spin.setValue(settings.sleep_multiplier)
         self._set_combo_data(self.candle_mode_combo, settings.candle_color_mode)
         self._set_combo_data(self.treemap_mode_combo, settings.treemap_color_mode)
-        self.kcal_per_kg_spin.setValue(settings.kcal_per_kg)
+        self._set_combo_data(self.energy_unit_combo, normalize_energy_unit(settings.energy_display_unit))
+        self.energy_per_kg_spin.set_display_unit(settings.energy_display_unit)
+        self.energy_per_kg_spin.set_energy_kj(settings.kj_per_kg)
         self.data_directory_edit.setText(str(settings.data_directory))
         self.status_label.setText("已载入当前设置。")
         self._loaded = True
 
     def refresh(self) -> None:
         self.load()
+
+    def _energy_unit_changed(self, _index: int) -> None:
+        # Preview the draft preference. Persistence waits for Save; reverting
+        # the combo or reloading never mutates the underlying canonical value.
+        self.energy_per_kg_spin.set_display_unit(self.energy_unit_combo.currentData())
+
+    @staticmethod
+    def _schedule_value(editor: QTimeEdit, original: time | None) -> time:
+        chosen = editor.time().toPython()
+        if original is not None and (chosen.hour, chosen.minute) == (original.hour, original.minute):
+            return original
+        return chosen.replace(second=0, microsecond=0)
 
     @staticmethod
     def _set_combo_data(combo: QComboBox, value: object) -> None:
@@ -272,26 +298,27 @@ class SettingsPage(QWidget):
             sex=str(self.sex_combo.currentData()),
             birth_date=self.birth_edit.date().toPython(),
             height_cm=self.height_spin.value(),
-            wake_time=self.wake_edit.time().toPython(),
-            sleep_time=self.sleep_edit.time().toPython(),
+            wake_time=self._schedule_value(self.wake_edit, self._settings.wake_time if self._settings else None),
+            sleep_time=self._schedule_value(self.sleep_edit, self._settings.sleep_time if self._settings else None),
             awake_multiplier=self.awake_spin.value(),
             sleep_multiplier=self.sleep_multiplier_spin.value(),
             candle_color_mode=str(self.candle_mode_combo.currentData()),  # type: ignore[arg-type]
             treemap_color_mode=str(self.treemap_mode_combo.currentData()),  # type: ignore[arg-type]
-            kcal_per_kg=self.kcal_per_kg_spin.value(),
+            kj_per_kg=self.energy_per_kg_spin.energy_kj(),
             data_directory=requested_directory,
+            energy_display_unit=normalize_energy_unit(self.energy_unit_combo.currentData()),
         )
         self.save_button.setEnabled(False)
         try:
-            self._context.save_settings(draft)
+            model_changed = self._context.save_settings(draft)
         except Exception as exc:
             QMessageBox.critical(self, "设置未保存", f"无法保存设置。\n\n{exc}")
             self.save_button.setEnabled(True)
             return
         self.save_button.setEnabled(True)
         self.load()
-        self.status_label.setText("设置已保存，首页图表颜色与派生数据已刷新。")
-        self.settings_saved.emit()
+        self.status_label.setText("设置已保存；显示单位和图表已更新。")
+        self.settings_saved.emit(model_changed)
 
     def _choose_data_directory(self) -> None:
         current = self.data_directory_edit.text().strip()

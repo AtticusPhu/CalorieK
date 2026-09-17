@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from app.db import Database
+from app.energy_units import kcal_to_kj
 from app.services.food_service import FoodService
 
 
@@ -23,7 +24,7 @@ class FoodSnapshotTests(unittest.TestCase):
             name="牛肉",
             category="肉类",
             basis_unit="g",
-            kcal=250,
+            kj=kcal_to_kj(250),
             protein_g=26,
             fat_g=15,
         )
@@ -35,14 +36,14 @@ class FoodSnapshotTests(unittest.TestCase):
         )
         original = self.foods.get_intake_event(event_id)
         self.assertEqual(original["name_snapshot"], "牛肉")
-        self.assertAlmostEqual(float(original["kcal_snapshot"]), 500.0)
+        self.assertAlmostEqual(float(original["kj_snapshot"]), kcal_to_kj(500.0))
         self.assertAlmostEqual(float(original["protein_snapshot"]), 52.0)
         self.assertEqual(self.foods.list_recent_foods()[0]["id"], beef_id)
 
-        self.foods.update_food(beef_id, name="瘦牛肉", kcal=230, protein_g=30)
+        self.foods.update_food(beef_id, name="瘦牛肉", kj=kcal_to_kj(230), protein_g=30)
         self.foods.soft_delete_food(beef_id)
         historical = self.foods.get_intake_event(event_id)
-        self.assertAlmostEqual(float(historical["kcal_snapshot"]), 500.0)
+        self.assertAlmostEqual(float(historical["kj_snapshot"]), kcal_to_kj(500.0))
         self.assertAlmostEqual(float(historical["protein_snapshot"]), 52.0)
         self.assertEqual(historical["name_snapshot"], "牛肉")
         self.assertEqual(len(self.foods.list_intake_events(local_date="2026-08-01")), 1)
@@ -52,7 +53,7 @@ class FoodSnapshotTests(unittest.TestCase):
             name="牛奶",
             category="蛋奶",
             basis_unit="ml",
-            kcal=60,
+            kj=kcal_to_kj(60),
             protein_g=3,
         )
         cup_id = self.foods.add_serving(
@@ -72,17 +73,17 @@ class FoodSnapshotTests(unittest.TestCase):
         event = self.foods.get_intake_event(event_id)
         self.assertEqual(event["amount"], 2.0)
         self.assertEqual(event["unit"], "serving")
-        self.assertAlmostEqual(float(event["kcal_snapshot"]), 300.0)
+        self.assertAlmostEqual(float(event["kj_snapshot"]), kcal_to_kj(300.0))
 
         self.foods.update_serving(cup_id, name="马克杯", base_amount=300)
         self.foods.soft_delete_serving(cup_id)
         self.assertIsNone(self.foods.get_serving(cup_id, include_inactive=False))
         self.foods.restore_serving(cup_id)
         self.assertEqual(self.foods.get_serving(cup_id)["name"], "马克杯")
-        self.foods.update_food(milk_id, kcal=10)
+        self.foods.update_food(milk_id, kj=kcal_to_kj(10))
         self.foods.update_intake_event(event_id, amount=1)
         scaled = self.foods.get_intake_event(event_id)
-        self.assertAlmostEqual(float(scaled["kcal_snapshot"]), 150.0)
+        self.assertAlmostEqual(float(scaled["kj_snapshot"]), kcal_to_kj(150.0))
         self.assertEqual(self.db.get_dirty_from_date(), "2026-08-02")
 
         self.foods.soft_delete_intake_event(event_id)
@@ -95,7 +96,7 @@ class FoodSnapshotTests(unittest.TestCase):
             name="自制点心",
             amount=1,
             unit="份",
-            kcal=320,
+            kj=kcal_to_kj(320),
             protein_g=8,
             occurred_at="2026-08-03T16:00:00",
             meal_type="零食",
@@ -104,15 +105,38 @@ class FoodSnapshotTests(unittest.TestCase):
         self.assertEqual(event["source_type"], "CUSTOM")
         self.assertIsNone(event["source_id"])
         self.assertEqual(event["meal_type"], "SNACK")
-        self.assertAlmostEqual(float(event["kcal_snapshot"]), 320.0)
+        self.assertAlmostEqual(float(event["kj_snapshot"]), kcal_to_kj(320.0))
 
         with self.assertRaises(ValueError):
             self.foods.create_food(
                 name="无效",
                 category="其它",
                 basis_unit="g",
-                kcal=float("inf"),
+                kj=float("inf"),
             )
+
+    def test_energy_persistence_preserves_full_float_precision(self) -> None:
+        energy_kj = 1234.56789012345
+        food_id = self.foods.create_food(
+            name="精确能量样本",
+            category="其它",
+            basis_unit="g",
+            kj=energy_kj,
+        )
+        self.assertEqual(self.foods.get_food(food_id)["kj"], energy_kj)
+        event_id = self.foods.record_food_intake(food_id, amount=100)
+        self.assertEqual(self.foods.get_intake_event(event_id)["kj_snapshot"], energy_kj)
+
+        updated_energy_kj = 987.654321234567
+        self.foods.update_food(food_id, kj=updated_energy_kj)
+        self.assertEqual(self.foods.get_food(food_id)["kj"], updated_energy_kj)
+        self.assertEqual(self.foods.get_intake_event(event_id)["kj_snapshot"], energy_kj)
+        custom_id = self.foods.record_custom_intake(
+            name="精确自定义摄入", amount=1, unit="份", kj=updated_energy_kj
+        )
+        self.assertEqual(
+            self.foods.get_intake_event(custom_id)["kj_snapshot"], updated_energy_kj
+        )
 
 
 if __name__ == "__main__":

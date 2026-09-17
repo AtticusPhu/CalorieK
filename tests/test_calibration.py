@@ -17,24 +17,24 @@ class CalibrationTests(unittest.TestCase):
             [CalibrationDay(date(2026, 8, 25), actual_weight_kg=70)]
         )
         self.assertFalse(result.fitted)
-        self.assertEqual(result.calibration_kcal_day, 0)
+        self.assertEqual(result.calibration_kj_day, 0)
         self.assertEqual(result.weight_sample_count, 1)
 
     def test_two_weights_across_five_days_can_fit_positive_extra_burn(self) -> None:
         start = date(2026, 8, 20)
-        expected_delta = 200
+        expected_delta = 836.8
         days = [CalibrationDay(start + timedelta(days=index)) for index in range(6)]
         days[0] = CalibrationDay(start, actual_weight_kg=70)
         days[-1] = CalibrationDay(
             start + timedelta(days=5),
-            actual_weight_kg=70 - expected_delta * 5 / 7700,
+            actual_weight_kg=70 - expected_delta * 5 / 32216.8,
         )
         result = self.engine.fit(days)
         self.assertTrue(result.fitted)
         self.assertEqual(result.days_span, 5)
         # A 7-observation-span EWMA has alpha=.25, so the raw two-point
         # movement becomes one quarter as large in the fitted trend.
-        self.assertAlmostEqual(result.calibration_kcal_day, expected_delta / 4)
+        self.assertAlmostEqual(result.calibration_kj_day, expected_delta / 4)
         self.assertAlmostEqual(result.rmse_kg or 0, 0, places=10)
         self.assertEqual(result.weight_sample_count, 2)
         self.assertEqual(result.trend_model_version, "ewma-observation-span-7-v1")
@@ -58,7 +58,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(result.window_start, start + timedelta(days=10))
         self.assertEqual(result.window_end, start + timedelta(days=39))
         self.assertEqual(result.weight_sample_count, 30)
-        self.assertAlmostEqual(result.calibration_kcal_day, 0)
+        self.assertAlmostEqual(result.calibration_kj_day, 0)
 
 
 if __name__ == "__main__":
