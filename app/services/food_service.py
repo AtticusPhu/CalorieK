@@ -213,6 +213,7 @@ class FoodService:
         return [dict(row) for row in rows]
 
     def update_food(self, food_id: int, **changes: Any) -> None:
+        """Update food data without changing its persisted physical dimension."""
         allowed = {
             "name",
             "category",
@@ -250,9 +251,16 @@ class FoodService:
         if "brand" in normalized:
             normalized["brand"] = str(normalized["brand"]).strip() or None
         if "basis_unit" in normalized:
-            normalized["basis_unit"] = str(normalized["basis_unit"]).lower()
-            if normalized["basis_unit"] not in {"g", "ml"}:
+            basis_unit = str(normalized.pop("basis_unit")).lower()
+            if basis_unit not in {"g", "ml"}:
                 raise ValueError("basis_unit must be 'g' or 'ml'")
+            if basis_unit != current["basis_unit"]:
+                raise ValueError(
+                    "basis_unit cannot be changed for an existing food; "
+                    "create a new food to use a different unit"
+                )
+            # Same-unit submissions are valid, but never write the immutable
+            # field. This protects servings and recipe items for every food.
         if "basis_amount" in normalized:
             normalized["basis_amount"] = _finite_number(
                 normalized["basis_amount"], "basis_amount", positive=True
@@ -266,6 +274,8 @@ class FoodService:
             )
         if "is_favorite" in normalized:
             normalized["is_favorite"] = int(bool(normalized["is_favorite"]))
+        if not normalized:
+            return
         assignments = [f"{field} = ?" for field in normalized]
         values = list(normalized.values())
         assignments.extend(("user_modified = 1", "updated_at = ?"))

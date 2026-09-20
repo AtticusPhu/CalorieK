@@ -83,9 +83,11 @@ class FoodEditorDialog(QDialog):
         self.basis_unit_combo.addItem("毫升 (ml)", "ml")
         if food and food.basis_unit == "ml":
             self.basis_unit_combo.setCurrentIndex(1)
-        if food and food.legacy_nutrition_available:
+        if food is not None:
             self.basis_unit_combo.setEnabled(False)
-            self.basis_unit_combo.setToolTip("兼容食品保留原有 g/ml 计量维度；不同维度请新建食品。")
+            self.basis_unit_combo.setToolTip(
+                "已保存食品的 g/ml 单位不可更改；切换质量与体积请新建食品。基准数量仍可修改。"
+            )
 
         basis_row = QWidget()
         basis_layout = QHBoxLayout(basis_row)
@@ -94,6 +96,11 @@ class FoodEditorDialog(QDialog):
         basis_layout.addWidget(self.basis_amount_spin, 1)
         basis_layout.addWidget(self.basis_unit_combo)
         form.addRow("食品基准 *", basis_row)
+        if food is not None:
+            basis_help = QLabel(self.basis_unit_combo.toolTip())
+            basis_help.setObjectName("muted")
+            basis_help.setWordWrap(True)
+            form.addRow(basis_help)
 
         self.energy_spin = EnergySpinBox(unit=self._energy_unit)
         self.energy_spin.set_kj_range(0.0, kcal_to_kj(100000.0))
