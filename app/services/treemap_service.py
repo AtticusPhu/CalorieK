@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Iterable, Literal, Mapping, TYPE_CHECKING
+from app.nutrition import intake_contribution
 
 if TYPE_CHECKING:
     from app.db.database import Database
@@ -89,6 +90,7 @@ class TreemapDataService:
             if kj <= 0:
                 continue
             meal = str(event.get("meal_type", "OTHER")).upper()
+            nutrition = intake_contribution(event).values
             items.append(
                 TreemapItem(
                     key=f"intake:{event.get('id', index)}",
@@ -97,10 +99,10 @@ class TreemapDataService:
                     side="intake",
                     category=_MEAL_LABELS.get(meal, "其它摄入"),
                     details={
-                        "protein_g": float(event.get("protein_snapshot", 0.0)),
-                        "fat_g": float(event.get("fat_snapshot", 0.0)),
-                        "carb_g": float(event.get("carb_snapshot", 0.0)),
-                        "fiber_g": float(event.get("fiber_snapshot", 0.0)),
+                        "protein_g": nutrition.protein_g,
+                        "fat_g": nutrition.fat_g,
+                        "carb_g": nutrition.carbs_g,
+                        "fiber_g": nutrition.fiber_g,
                     },
                 )
             )

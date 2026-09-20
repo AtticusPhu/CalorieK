@@ -95,11 +95,14 @@ class NutritionMigrationTests(unittest.TestCase):
             for table, fields in (("foods", FOOD_NUTRIENT_FIELDS), ("intake_events", (*NUTRIENT_NAMES, "nutrition_complete"))):
                 self.assertTrue(all(value is None for row in connection.execute(f'SELECT {", ".join(fields)} FROM {table}') for value in row))
         day = NutritionService(self.db).daily_totals("2026-08-20")
-        self.assertEqual(day.indication, "部分记录无营养数据")
-        self.assertEqual(day.nutrients.as_tuple(), (None,) * 4)
-        # Historical edits scale NULL snapshots, never backfill from old macros.
+        self.assertEqual(day.indication, "")
+        self.assertEqual(day.nutrients.as_tuple(), (17.123456789, 5.4321, 0.0, 0.0))
+        # Scale the stored legacy snapshot without materializing v3 fields.
         FoodService(self.db).update_intake_event(1, amount=71)
-        self.assertEqual(NutritionService(self.db).daily_totals("2026-08-20").nutrients.as_tuple(), (None,) * 4)
+        self.assertEqual(NutritionService(self.db).daily_totals("2026-08-20").nutrients.as_tuple(),
+                         (34.246913578, 10.8642, 0.0, 0.0))
+        event = FoodService(self.db).get_intake_event(1)
+        self.assertTrue(all(event[field] is None for field in (*NUTRIENT_NAMES, "nutrition_complete")))
 
     def test_repeated_initialize_is_logically_identical_and_takes_no_new_snapshot(self) -> None:
         self.db.initialize()
@@ -222,7 +225,7 @@ class NutritionMigrationTests(unittest.TestCase):
         self.assertEqual(legacy_rows(target.path, columns)[1], old_values)
         self.assertEqual(dump(self.path), original)
         self.assertEqual(backup.read_bytes(), archive_bytes)
-        self.assertEqual(NutritionService(target).daily_totals("2026-08-20").indication, "部分记录无营养数据")
+        self.assertEqual(NutritionService(target).daily_totals("2026-08-20").indication, "")
 
     def test_v2_restore_failure_after_migration_keeps_live_and_archive_unchanged(self) -> None:
         backup = BackupService(self.path).create_backup(self.root / "v2.zip")

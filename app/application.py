@@ -13,7 +13,7 @@ from typing import Any, Sequence
 from app.color_modes import candle_palette, treemap_palette
 from app.db.database import Database
 from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit, format_energy, kcal_to_kj, normalize_energy_unit
-from app.nutrition import DailyNutrition, NutritionContribution, aggregate_contributions, food_contribution
+from app.nutrition import DailyNutrition, NutritionContribution, aggregate_contributions, food_contribution, legacy_food_available
 from app.paths import database_path, ensure_data_dir, save_data_dir_preference
 from app.services.backup_service import BackupService
 from app.services.daily_metrics_service import DailyMetricsService, parse_local_datetime
@@ -26,6 +26,9 @@ from app.services.treemap_service import TreemapDataService
 from app.ui.context import (
     CandleDTO,
     DashboardDTO,
+    DailyRecordDTO,
+    IntakeEditDraft,
+    ExerciseEditDraft,
     ExerciseDraft,
     ExerciseSection,
     ExerciseTypeDTO,
@@ -133,11 +136,14 @@ class ApplicationContext:
             fiber_g_per_100g=row["fiber_g_per_100g"],
             fat_g_per_100g=row["fat_g_per_100g"],
             carbs_g_per_100g=row["carbs_g_per_100g"],
+            legacy_nutrition_available=legacy_food_available(row),
+            basis_nutrition=food_contribution(row, float(row["basis_amount"])),
         )
 
     def _intake_source_from_food(self, row: dict) -> IntakeSourceDTO:
         amount = float(row.get("default_serving") or row["basis_amount"])
         factor = amount / float(row["basis_amount"])
+        composition = food_contribution(row, amount).values
         servings = tuple(
             FoodServingDTO(
                 serving_id=int(serving["id"]),
@@ -156,10 +162,10 @@ class ApplicationContext:
             category=str(row["category"]),
             detail=f"每 {row['basis_amount']:.2f}{row['basis_unit']} · {format_energy(row['kj'], self.get_energy_display_unit())}",
             kj_reference=float(row["kj"]) * factor,
-            protein_g=float(row["protein_g"]) * factor,
-            fat_g=float(row["fat_g"]) * factor,
-            carb_g=float(row["carb_g"]) * factor,
-            fiber_g=float(row["fiber_g"]) * factor,
+            protein_g=composition.protein_g,
+            fat_g=composition.fat_g,
+            carb_g=composition.carbs_g,
+            fiber_g=composition.fiber_g,
             allowed_units=(str(row["basis_unit"]),),
             default_amount=amount,
             favorite=bool(row["is_favorite"]),
@@ -182,6 +188,9 @@ class ApplicationContext:
             )
             allowed_units = ("ratio_percent",)
         has_reference = normalization_unit in {"g", "ml"}
+        composition = nutrition["composition"].scaled(
+            100.0 / nutrition["total_amount"] if has_reference else 1.0
+        ).values
         return IntakeSourceDTO(
             source_type="recipe",
             source_id=int(row["id"]),
@@ -189,10 +198,10 @@ class ApplicationContext:
             category="我的食谱",
             detail=f"{amount_detail} · 合计 {format_energy(nutrition['kj'], self.get_energy_display_unit())}",
             kj_reference=(float(nutrition["per_100g_kj"]) if has_reference else None),
-            protein_g=(float(nutrition["per_100g_protein_g"]) if has_reference else None),
-            fat_g=(float(nutrition["per_100g_fat_g"]) if has_reference else None),
-            carb_g=(float(nutrition["per_100g_carb_g"]) if has_reference else None),
-            fiber_g=(float(nutrition["per_100g_fiber_g"]) if has_reference else None),
+            protein_g=composition.protein_g,
+            fat_g=composition.fat_g,
+            carb_g=composition.carbs_g,
+            fiber_g=composition.fiber_g,
             allowed_units=allowed_units,
             default_amount=100.0,
             favorite=bool(row["is_favorite"]),
@@ -253,11 +262,16 @@ class ApplicationContext:
         )
 
     def record_intake(self, event: IntakeDraft) -> None:
+        self._save_intake_source(event)
+        self.daily.ensure_calculated(max(event.occurred_at.date(), date.today()))
+
+    def _save_intake_source(self, event: IntakeDraft, replace_event_id: int | None = None) -> None:
         if event.source_type == "recipe":
             if event.unit == "ratio_percent":
                 self.recipes.record_recipe_intake(
                     event.source_id,
                     fraction=event.amount / 100.0,
+                    replace_event_id=replace_event_id,
                     occurred_at=event.occurred_at,
                     meal_type=event.meal_category,
                     note=event.note,
@@ -266,6 +280,7 @@ class ApplicationContext:
                 self.recipes.record_recipe_intake(
                     event.source_id,
                     amount=event.amount,
+                    replace_event_id=replace_event_id,
                     unit=event.unit,
                     occurred_at=event.occurred_at,
                     meal_type=event.meal_category,
@@ -277,11 +292,65 @@ class ApplicationContext:
                 amount=event.amount,
                 unit=event.unit,
                 serving_id=event.serving_id,
+                replace_event_id=replace_event_id,
                 occurred_at=event.occurred_at,
                 meal_type=event.meal_category,
                 note=event.note,
             )
-        self.daily.ensure_calculated(max(event.occurred_at.date(), date.today()))
+
+    def update_intake(self, record_id: int, edit: IntakeEditDraft) -> None:
+        old = self.foods.get_intake_event(record_id, include_inactive=False)
+        if old is None:
+            raise LookupError(f"active intake event {record_id} does not exist")
+        if edit.replacement is None:
+            self.foods.update_intake_event(
+                record_id, amount=edit.amount, occurred_at=edit.occurred_at,
+                meal_type=edit.meal_category, note=edit.note, update_note=True,
+            )
+        else:
+            source = edit.replacement
+            self._save_intake_source(IntakeDraft(
+                occurred_at=edit.occurred_at, source_type=source.source_type,
+                source_id=source.source_id, amount=edit.amount, unit=source.unit,
+                meal_category=edit.meal_category, note=edit.note, serving_id=source.serving_id,
+            ), replace_event_id=record_id)
+        self.daily.ensure_calculated(max(date.fromisoformat(old["local_date"]), edit.occurred_at.date(), date.today()))
+
+    def update_exercise(self, record_id: int, edit: ExerciseEditDraft) -> None:
+        old = self.exercises.get_exercise_event(record_id, include_inactive=False)
+        if old is None:
+            raise LookupError(f"active exercise event {record_id} does not exist")
+        self.exercises.update_exercise_event(
+            record_id, exercise_type_id=edit.replacement_type_id, occurred_at=edit.occurred_at,
+            duration_min=edit.duration_min, active_kj=edit.active_kj, note=edit.note, update_note=True,
+        )
+        self.daily.ensure_calculated(max(date.fromisoformat(old["local_date"]), edit.occurred_at.date(), date.today()))
+
+    def get_daily_records(self, day: date) -> Sequence[DailyRecordDTO]:
+        from app.services.weight_service import WeightService
+
+        records = []
+        for row in self.foods.list_intake_events(local_date=day):
+            records.append(DailyRecordDTO(
+                "intake", int(row["id"]), datetime.fromisoformat(row["occurred_at"]),
+                row["name_snapshot"], note=row["note"] or "", amount=float(row["amount"]),
+                unit=row["unit"], meal_type=row["meal_type"], energy_kj=float(row["kj_snapshot"]),
+            ))
+        for row in self.exercises.list_exercise_events(local_date=day):
+            records.append(DailyRecordDTO(
+                "exercise", int(row["id"]), datetime.fromisoformat(row["occurred_at"]),
+                row["name_snapshot"], note=row["note"] or "", duration_min=float(row["duration_min"]),
+                energy_kj=float(row["active_kj"]), exercise_type_id=row["exercise_type_id"],
+            ))
+        for row in WeightService(self.database).list_measurements(local_date=day):
+            records.append(DailyRecordDTO(
+                "weight", int(row["id"]), datetime.fromisoformat(row["occurred_at"]),
+                "体重", note=row["note"] or "", amount=float(row["weight_kg"]), unit="kg",
+            ))
+        # Match existing local-calendar calculations; retain original offsets in DTOs.
+        return tuple(sorted(records, key=lambda item: (
+            parse_local_datetime(item.occurred_at), item.kind, item.record_id,
+        )))
 
     def list_exercise_types(
         self, section: ExerciseSection

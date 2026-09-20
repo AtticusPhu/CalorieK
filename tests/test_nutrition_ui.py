@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock
 
 from app.application import ApplicationContext
-from app.nutrition import DailyNutrition, NutrientValues
+from app.nutrition import DailyNutrition, NutrientValues, NutritionContribution
 from app.ui.context import DashboardDTO, FoodDTO, SettingsDTO
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -72,10 +72,11 @@ class NutritionUITests(unittest.TestCase):
         context.list_foods.return_value = [FoodDTO(
             food_id=1, name="营养食品", category="测试", protein_g_per_100g=12.3456789012345,
             fiber_g_per_100g=0, fat_g_per_100g=None, carbs_g_per_100g=5.4321,
+            basis_nutrition=NutritionContribution(NutrientValues(12.3456789012345, 0, None, 5.4321), False),
         )]
         library = FoodLibraryPage(context)
         library.refresh()
-        self.assertEqual([library.table.item(0, col).text() for col in range(11, 15)],
+        self.assertEqual([library.table.item(0, col).text() for col in range(5, 9)],
                          ["12.35 g", "0.00 g", "未知", "5.43 g"])
         dialog.deleteLater()
         library.deleteLater()

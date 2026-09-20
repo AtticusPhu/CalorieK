@@ -117,6 +117,7 @@ class DashboardPage(QWidget):
         self.candle_helper.setObjectName("muted")
         self.candle_helper.setWordWrap(True)
         self.candlestick_chart = CandlestickChart()
+        self.candlestick_chart.date_selected.connect(self.open_daily_timeline)
 
         candle_card = QFrame()
         candle_card.setObjectName("card")
@@ -190,6 +191,14 @@ class DashboardPage(QWidget):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def open_daily_timeline(self, day) -> None:
+        from .daily_timeline import DailyTimelineDialog
+
+        dialog = DailyTimelineDialog(self._context, day, self)
+        dialog.data_changed.connect(self.refresh)
+        dialog.data_changed.connect(self.data_changed.emit)
+        dialog.exec()
 
     def refresh(self) -> None:
         """Fetch a complete immutable snapshot and render it atomically."""

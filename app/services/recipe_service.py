@@ -8,9 +8,10 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import Any
 
-from app.db.database import Database, normalize_datetime, now_iso, row_to_dict
+from app.db.database import Database, now_iso
 from app.nutrition import aggregate_contributions, food_contribution
 from app.services.food_service import normalize_meal_type
+from app.services.intake_snapshot import save_source_snapshot
 
 
 class RecipeService:
@@ -287,7 +288,9 @@ class RecipeService:
             SELECT ri.amount, ri.unit, f.basis_amount, f.basis_unit,
                    f.kj, f.protein_g, f.fat_g, f.carb_g, f.fiber_g,
                    f.protein_g_per_100g, f.fiber_g_per_100g,
-                   f.fat_g_per_100g, f.carbs_g_per_100g
+                   f.fat_g_per_100g, f.carbs_g_per_100g,
+                   f.created_at, f.is_builtin, f.builtin_key,
+                   (SELECT applied_at FROM schema_version WHERE version = 3) AS v3_applied_at
             FROM recipe_items ri JOIN foods f ON f.id = ri.food_id
             WHERE ri.recipe_id = ? AND ri.active = 1
             ORDER BY ri.id
@@ -352,7 +355,9 @@ class RecipeService:
                 food = connection.execute(
                     """
                     SELECT basis_amount, basis_unit, kj, protein_g, fat_g, carb_g, fiber_g,
-                           protein_g_per_100g, fiber_g_per_100g, fat_g_per_100g, carbs_g_per_100g
+                           protein_g_per_100g, fiber_g_per_100g, fat_g_per_100g, carbs_g_per_100g,
+                           created_at, is_builtin, builtin_key,
+                           (SELECT applied_at FROM schema_version WHERE version = 3) AS v3_applied_at
                     FROM foods WHERE id = ? AND active = 1
                     """,
                     (food_id,),
@@ -390,12 +395,13 @@ class RecipeService:
         occurred_at: datetime | date | str | None = None,
         meal_type: str = "OTHER",
         note: str | None = None,
+        replace_event_id: int | None = None,
     ) -> int:
         supplied_amount = amount_g if amount_g is not None else amount
         supplied_unit = "g" if amount_g is not None else unit
         if supplied_amount is not None and fraction is not None:
             raise ValueError("specify consumed grams or recipe fraction, not both")
-        with self.db.connection() as connection:
+        with self.db.transaction() as connection:
             recipe_row = connection.execute(
                 "SELECT * FROM recipes WHERE id = ? AND active = 1", (recipe_id,)
             ).fetchone()
@@ -404,66 +410,32 @@ class RecipeService:
             totals = self._calculate_with_connection(connection, recipe_id)
             recipe_name = str(recipe_row["name"])
 
-        if supplied_amount is None and fraction is None:
-            fraction = 1.0
-        if fraction is not None:
-            ratio = float(fraction)
-            event_amount = ratio
-            event_unit = "recipe"
-        else:
-            event_amount = float(supplied_amount)
-            expected_unit = totals["normalization_unit"]
-            if expected_unit is None:
-                raise ValueError(
-                    "mixed g/ml recipes can only be recorded as a recipe fraction"
-                )
-            event_unit = (supplied_unit or expected_unit).lower()
-            if event_unit != expected_unit:
-                raise ValueError(
-                    f"recipe is measured in {expected_unit}, not {event_unit}"
-                )
-            ratio = event_amount / totals["total_amount"]
-        if (
-            not math.isfinite(ratio)
-            or not math.isfinite(event_amount)
-            or ratio <= 0
-            or event_amount <= 0
-        ):
-            raise ValueError("consumed amount or fraction must be finite and positive")
-
-        occurred_value, local_date = normalize_datetime(occurred_at)
-        timestamp = now_iso()
-        with self.db.transaction() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO intake_events(
-                    occurred_at, local_date, source_type, source_id, meal_type,
-                    name_snapshot, amount, unit, kj_snapshot,
-                    protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
-                    note, created_at, updated_at, active,
-                    protein_g, fiber_g, fat_g, carbs_g, nutrition_complete
-                ) VALUES (?, ?, 'RECIPE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                """,
-                (
-                    occurred_value,
-                    local_date,
-                    recipe_id,
-                    normalize_meal_type(meal_type),
-                    recipe_name,
-                    event_amount,
-                    event_unit,
-                    totals["kj"] * ratio,
-                    totals["protein_g"] * ratio,
-                    totals["fat_g"] * ratio,
-                    totals["carb_g"] * ratio,
-                    totals["fiber_g"] * ratio,
-                    note,
-                    timestamp,
-                    timestamp,
-                    *totals["composition"].scaled(ratio).snapshot_values(),
-                ),
+            if supplied_amount is None and fraction is None:
+                fraction = 1.0
+            if fraction is not None:
+                ratio = float(fraction)
+                event_amount = ratio
+                event_unit = "recipe"
+            else:
+                event_amount = float(supplied_amount)
+                expected_unit = totals["normalization_unit"]
+                if expected_unit is None:
+                    raise ValueError("mixed g/ml recipes can only be recorded as a recipe fraction")
+                event_unit = (supplied_unit or expected_unit).lower()
+                if event_unit != expected_unit:
+                    raise ValueError(f"recipe is measured in {expected_unit}, not {event_unit}")
+                ratio = event_amount / totals["total_amount"]
+            if not math.isfinite(ratio) or not math.isfinite(event_amount) or ratio <= 0 or event_amount <= 0:
+                raise ValueError("consumed amount or fraction must be finite and positive")
+            return save_source_snapshot(
+                self.db, connection, source_type="RECIPE", source_id=recipe_id,
+                name=recipe_name, amount=event_amount, unit=event_unit,
+                nutrients=dict(kj=totals["kj"] * ratio, protein=totals["protein_g"] * ratio,
+                               fat=totals["fat_g"] * ratio, carb=totals["carb_g"] * ratio,
+                               fiber=totals["fiber_g"] * ratio),
+                composition=totals["composition"].scaled(ratio), occurred_at=occurred_at,
+                meal_type=normalize_meal_type(meal_type), note=note,
+                replace_event_id=replace_event_id,
             )
-            self.db.mark_dirty(local_date, connection=connection)
-            return int(cursor.lastrowid)
 
     record_intake = record_recipe_intake

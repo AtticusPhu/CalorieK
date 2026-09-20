@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from app.db.migrations import execute_schema, migrate_v1_to_v2, migrate_v2_to_v3, schema_sql_for_version, validate_schema
-from app.db.migrations.snapshot import create_pre_migration_snapshot
+from app.db.migrations.snapshot import create_pre_cal12_nutrition_snapshot, create_pre_migration_snapshot
+from app.db.nutrition_repair import has_cal12_nutrition_repair_candidates, repair_cal12_nutrition
 from app.version import SCHEMA_VERSION
 
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
@@ -80,6 +81,8 @@ class Database:
         self.last_migration_snapshot: Path | None = None
         self.last_migration_from_version: int | None = None
         self.initial_schema_version: int | None = None
+        self.last_nutrition_repair_snapshot: Path | None = None
+        self.last_nutrition_repair_count = 0
 
     def connect(self) -> sqlite3.Connection:
         """Open a configured connection.
@@ -155,16 +158,23 @@ class Database:
         self.last_migration_snapshot = None
         self.last_migration_from_version = None
         self.initial_schema_version = None
+        self.last_nutrition_repair_snapshot = None
+        self.last_nutrition_repair_count = 0
         with self.connection() as connection:
             current = self._initialization_version(connection)
             if current:
                 validate_schema(connection, current)
-            # Journal mode is persistent and must be selected outside a transaction.
-            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
-            if not mode or str(mode[0]).lower() != "wal":
-                raise RuntimeError("could not enable WAL before database initialization")
+            # Existing v3 must have no live mutation before a repair snapshot:
+            # even a DELETE -> WAL header change would violate that guarantee.
+            # Preserve its current mode (normally WAL). New/legacy initialization
+            # and the backup restore staging flow still explicitly enable WAL.
+            if current != 3:
+                mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+                if not mode or str(mode[0]).lower() != "wal":
+                    raise RuntimeError("could not enable WAL before database initialization")
             connection.execute("BEGIN IMMEDIATE")
             try:
+                repaired_count = 0
                 # Re-read under the writer lock: another process may have finished
                 # its upgrade since preflight. Never apply an upgrade twice.
                 current = self._initialization_version(connection)
@@ -198,12 +208,23 @@ class Database:
                     migrate_v2_to_v3(connection)
                 elif current == LATEST_SCHEMA_VERSION:
                     validate_schema(connection, current)
+                    if current == 3 and has_cal12_nutrition_repair_candidates(connection):
+                        try:
+                            self.last_nutrition_repair_snapshot = create_pre_cal12_nutrition_snapshot(
+                                self.path, timeout=self.timeout,
+                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"CAL-12 pre-repair safety snapshot failed; repair was not started: {exc}"
+                            ) from exc
+                        repaired_count = repair_cal12_nutrition(connection)
                 else:
                     raise RuntimeError(f"unsupported database schema {current}")
-                connection.execute(
-                    "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
-                    (LATEST_SCHEMA_VERSION, timestamp),
-                )
+                if original_version != LATEST_SCHEMA_VERSION:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO schema_version(version, applied_at) VALUES (?, ?)",
+                        (LATEST_SCHEMA_VERSION, timestamp),
+                    )
                 if original_version in (0, 1):
                     connection.execute(
                         "INSERT OR IGNORE INTO recalculation_state(id, dirty_from_date, updated_at) "
@@ -217,16 +238,27 @@ class Database:
 
                     seed_builtin_foods(connection)
                 connection.commit()
+                self.last_nutrition_repair_count = repaired_count
             except BaseException as exc:
                 try:
                     connection.rollback()
                 except Exception as rollback_error:
+                    if self.last_nutrition_repair_snapshot is not None:
+                        raise RuntimeError(
+                            f"CAL-12 nutrition repair failed: {exc}; rollback also failed: {rollback_error}; "
+                            f"recover from original schema-v3 safety snapshot: {self.last_nutrition_repair_snapshot}"
+                        ) from exc
                     if self.last_migration_snapshot is not None:
                         raise RuntimeError(
                             f"database migration failed: {exc}; rollback also failed: {rollback_error}; "
                             f"recover from original schema-v{self.last_migration_from_version} safety snapshot: {self.last_migration_snapshot}"
                         ) from exc
                     raise
+                if self.last_nutrition_repair_snapshot is not None and isinstance(exc, Exception):
+                    raise RuntimeError(
+                        f"CAL-12 nutrition repair failed and was rolled back: {exc}; "
+                        f"original schema-v3 safety snapshot: {self.last_nutrition_repair_snapshot}"
+                    ) from exc
                 if self.last_migration_snapshot is not None and isinstance(exc, Exception):
                     raise RuntimeError(
                         f"database migration failed and was rolled back: {exc}; "

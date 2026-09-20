@@ -4,7 +4,7 @@ from datetime import date
 
 from app.db.database import Database, normalize_date
 from app.nutrition import (
-    DailyNutrition, NUTRIENT_NAMES, NutrientValues, NutritionContribution, aggregate_contributions,
+    DailyNutrition, aggregate_contributions, intake_contribution,
 )
 
 
@@ -16,15 +16,12 @@ class NutritionService:
         normalized = normalize_date(day)
         with self.db.connection() as connection:
             rows = connection.execute(
-                "SELECT protein_g, fiber_g, fat_g, carbs_g, nutrition_complete "
+                "SELECT protein_g, fiber_g, fat_g, carbs_g, nutrition_complete, "
+                "protein_snapshot, fiber_snapshot, fat_snapshot, carb_snapshot "
                 "FROM intake_events WHERE active = 1 AND local_date = ? ORDER BY occurred_at, id",
                 (normalized,),
             ).fetchall()
-        snapshots = []
-        for row in rows:
-            values = NutrientValues(*(row[name] for name in NUTRIENT_NAMES))
-            complete = row["nutrition_complete"] == 1 and all(value is not None for value in values.as_tuple())
-            snapshots.append(NutritionContribution(values, complete))
+        snapshots = [intake_contribution(dict(row)) for row in rows]
         total = aggregate_contributions(snapshots)
         return DailyNutrition(
             date.fromisoformat(normalized), total.values, len(rows),

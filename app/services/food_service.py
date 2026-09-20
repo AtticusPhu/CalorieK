@@ -8,8 +8,9 @@ from typing import Any
 
 from app.db.database import Database, normalize_datetime, now_iso, row_to_dict
 from app.nutrition import (
-    FOOD_NUTRIENT_FIELDS, NutrientValues, NutritionContribution, food_contribution, optional_nutrient,
+    FOOD_NUTRIENT_FIELDS, FOOD_PROVENANCE_SQL, NutrientValues, NutritionContribution, food_contribution, optional_nutrient,
 )
+from app.services.intake_snapshot import save_source_snapshot
 
 
 MEAL_TYPES = frozenset({"BREAKFAST", "LUNCH", "DINNER", "SNACK", "OTHER"})
@@ -150,7 +151,7 @@ class FoodService:
             return food_id
 
     def get_food(self, food_id: int, *, include_inactive: bool = True) -> dict[str, Any] | None:
-        sql = "SELECT * FROM foods WHERE id = ?"
+        sql = f"SELECT *, {FOOD_PROVENANCE_SQL} FROM foods WHERE id = ?"
         parameters: tuple[Any, ...] = (food_id,)
         if not include_inactive:
             sql += " AND active = 1"
@@ -182,7 +183,7 @@ class FoodService:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.db.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM foods" + where + " ORDER BY is_favorite DESC, name, id",
+                f"SELECT *, {FOOD_PROVENANCE_SQL} FROM foods" + where + " ORDER BY is_favorite DESC, name, id",
                 parameters,
             ).fetchall()
         return [dict(row) for row in rows]
@@ -197,7 +198,8 @@ class FoodService:
         with self.db.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT f.*, MAX(e.occurred_at) AS last_used_at
+                SELECT f.*, MAX(e.occurred_at) AS last_used_at,
+                       (SELECT applied_at FROM schema_version WHERE version = 3) AS v3_applied_at
                 FROM foods f
                 JOIN intake_events e
                   ON e.source_type = 'FOOD' AND e.source_id = f.id AND e.active = 1
@@ -465,70 +467,41 @@ class FoodService:
         serving_id: int | None = None,
         meal_type: str = "OTHER",
         note: str | None = None,
+        replace_event_id: int | None = None,
     ) -> int:
-        food = self.get_food(food_id, include_inactive=False)
-        if food is None:
-            raise LookupError(f"active food {food_id} does not exist")
         amount_value = _finite_number(amount, "amount", positive=True)
-
-        if serving_id is not None:
-            with self.db.connection() as connection:
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                f"SELECT *, {FOOD_PROVENANCE_SQL} FROM foods WHERE id = ? AND active = 1",
+                (food_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"active food {food_id} does not exist")
+            food = dict(row)
+            if serving_id is not None:
                 serving_row = connection.execute(
                     "SELECT * FROM food_servings WHERE id = ? AND food_id = ? AND active = 1",
                     (serving_id, food_id),
                 ).fetchone()
-            if serving_row is None:
-                raise LookupError(f"serving {serving_id} does not exist for food {food_id}")
-            serving = dict(serving_row)
-            base_amount = amount_value * float(serving["base_amount"]) / float(
-                serving["serving_amount"]
-            )
-            unit_value = str(serving["serving_unit"])
-        else:
-            unit_value = (unit or food["basis_unit"]).lower()
-            if unit_value != food["basis_unit"]:
-                raise ValueError(
-                    f"food {food_id} is measured in {food['basis_unit']}, not {unit_value}"
+                if serving_row is None:
+                    raise LookupError(f"serving {serving_id} does not exist for food {food_id}")
+                base_amount = amount_value * float(serving_row["base_amount"]) / float(
+                    serving_row["serving_amount"]
                 )
-            base_amount = amount_value
-
-        nutrients = self._nutrition_for_base_amount(food, base_amount)
-        composition = food_contribution(food, base_amount)
-        occurred_value, local_date = normalize_datetime(occurred_at)
-        timestamp = now_iso()
-        meal_value = normalize_meal_type(meal_type)
-        with self.db.transaction() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO intake_events(
-                    occurred_at, local_date, source_type, source_id, meal_type,
-                    name_snapshot, amount, unit, kj_snapshot,
-                    protein_snapshot, fat_snapshot, carb_snapshot, fiber_snapshot,
-                    note, created_at, updated_at, active,
-                    protein_g, fiber_g, fat_g, carbs_g, nutrition_complete
-                ) VALUES (?, ?, 'FOOD', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                """,
-                (
-                    occurred_value,
-                    local_date,
-                    food_id,
-                    meal_value,
-                    food["name"],
-                    amount_value,
-                    unit_value,
-                    nutrients["kj"],
-                    nutrients["protein"],
-                    nutrients["fat"],
-                    nutrients["carb"],
-                    nutrients["fiber"],
-                    note,
-                    timestamp,
-                    timestamp,
-                    *composition.snapshot_values(),
-                ),
+                unit_value = str(serving_row["serving_unit"])
+            else:
+                unit_value = (unit or food["basis_unit"]).lower()
+                if unit_value != food["basis_unit"]:
+                    raise ValueError(f"food {food_id} is measured in {food['basis_unit']}, not {unit_value}")
+                base_amount = amount_value
+            return save_source_snapshot(
+                self.db, connection, source_type="FOOD", source_id=food_id,
+                name=food["name"], amount=amount_value, unit=unit_value,
+                nutrients=self._nutrition_for_base_amount(food, base_amount),
+                composition=food_contribution(food, base_amount), occurred_at=occurred_at,
+                meal_type=normalize_meal_type(meal_type), note=note,
+                replace_event_id=replace_event_id,
             )
-            self.db.mark_dirty(local_date, connection=connection)
-            return int(cursor.lastrowid)
 
     # Concise aliases are useful to UI call sites and tests.
     add_intake_event = record_food_intake

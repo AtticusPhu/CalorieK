@@ -28,8 +28,8 @@ ENERGY_COLUMN_MIGRATIONS = {
     ),
 }
 
-# Add only nullable metadata. Never reinterpret the legacy non-null macro
-# columns: their default zero cannot establish whether nutrition was known.
+# Add only nullable metadata, without rewriting historical facts. CAL-12 reads
+# legacy values using food provenance / the snapshot completeness tri-state.
 NUTRITION_COLUMN_MIGRATIONS = {
     "foods": tuple(
         (name, f"REAL CHECK ({name} IS NULL OR {name} >= 0)")

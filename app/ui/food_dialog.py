@@ -9,6 +9,7 @@ from typing import cast
 
 from PySide6.QtCore import QDateTime, QTimer, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDateTimeEdit,
     QDialog,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
 
 from .context import (
     FoodServingDTO,
+    DailyRecordDTO,
+    IntakeEditDraft,
     IntakeDraft,
     IntakeSection,
     IntakeSourceDTO,
@@ -47,20 +50,24 @@ class FoodDialog(QDialog):
 
     _SECTIONS: tuple[IntakeSection, ...] = ("recent", "favorites", "recipes", "search")
 
-    def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
+    def __init__(self, context: UIContext, parent: QWidget | None = None, *, record: DailyRecordDTO | None = None) -> None:
         super().__init__(parent)
         self._context = context
         self._energy_unit = context.get_energy_display_unit()
         self._selected: IntakeSourceDTO | None = None
-        self.setWindowTitle("记录饮食")
+        self._record = record
+        self.setWindowTitle("编辑饮食" if record else "记录饮食")
         self.setMinimumSize(620, 650)
-        self.setAccessibleName("饮食录入")
+        self.setAccessibleName("饮食编辑" if record else "饮食录入")
 
-        title = QLabel("记录饮食")
+        title = QLabel(self.windowTitle())
         title.setObjectName("pageTitle")
         helper = QLabel("历史事件会保存营养快照；以后修改食品或食谱不会改变这次记录。")
         helper.setObjectName("muted")
         helper.setWordWrap(True)
+        self.replace_source = QCheckBox("更换食品 / 食谱或单位（按当前来源重新计算快照）")
+        self.replace_source.setVisible(record is not None)
+        self.replace_source.toggled.connect(self._toggle_replacement)
 
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("饮食来源")
@@ -155,10 +162,47 @@ class FoodDialog(QDialog):
         layout.setSpacing(14)
         layout.addWidget(title)
         layout.addWidget(helper)
+        layout.addWidget(self.replace_source)
         layout.addWidget(self.tabs, 1)
         layout.addLayout(form)
         layout.addWidget(self.buttons)
         self._load_initial_sections()
+        if record is not None:
+            self._restore_snapshot_fields(initial=True)
+
+    def _restore_snapshot_fields(self, *, initial: bool = False) -> None:
+        record = self._record
+        if record is None:
+            return
+        self._selected = None
+        self.tabs.setVisible(False)
+        self.unit_combo.blockSignals(True)
+        self.unit_combo.clear()
+        self.unit_combo.addItem(_UNIT_LABELS.get(record.unit, "份食谱" if record.unit == "recipe" else record.unit), record.unit)
+        self.unit_combo.blockSignals(False)
+        self.unit_combo.setEnabled(False)
+        self.selected_label.setText(record.name)
+        self.nutrition_label.setText(f"已保存能量 {format_energy(record.energy_kj, self._energy_unit)}；按原快照比例调整")
+        self.amount_spin.setRange(min(0.001, record.amount), max(100000.0, record.amount))
+        self.amount_spin.setSuffix(f" {self.unit_combo.currentText()}")
+        self.amount_spin.setValue(record.amount)
+        if initial:
+            self.at_edit.setDateTime(QDateTime(record.occurred_at.replace(tzinfo=None)))
+            self._original_ui_time = self.at_edit.dateTime()
+            self.meal_combo.setCurrentIndex({"BREAKFAST": 0, "LUNCH": 1, "DINNER": 2, "SNACK": 3}.get(record.meal_type, 4))
+            self.note_edit.setPlainText(record.note)
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(True)
+
+    def _toggle_replacement(self, checked: bool) -> None:
+        self.tabs.setVisible(checked)
+        self.unit_combo.setEnabled(checked)
+        if checked:
+            # Require a deliberate selection; do not silently substitute the first food.
+            for widget in self.lists:
+                widget.setCurrentRow(-1)
+            self._selection_changed(None)
+        else:
+            self._restore_snapshot_fields()
 
     def _new_source_list(self) -> QListWidget:
         widget = QListWidget()
@@ -210,6 +254,8 @@ class FoodDialog(QDialog):
             self._selection_changed(widget.currentItem())
 
     def _selection_changed(self, item: QListWidgetItem | None, *_args: object) -> None:
+        if self._record is not None and not self.replace_source.isChecked():
+            return
         source = None if item is None else item.data(Qt.ItemDataRole.UserRole)
         self._selected = cast(IntakeSourceDTO | None, source)
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
@@ -284,13 +330,16 @@ class FoodDialog(QDialog):
             self.amount_spin.setSuffix(f" {unit or ''}")
 
     def _save(self) -> None:
+        if self._record is not None and not self.replace_source.isChecked():
+            self._save_edit(None)
+            return
         if self._selected is None or self.unit_combo.currentData() is None:
             QMessageBox.warning(self, "请选择项目", "请先选择食品或食谱。")
             return
         choice = self.unit_combo.currentData()
         serving = choice if isinstance(choice, FoodServingDTO) else None
         draft = IntakeDraft(
-            occurred_at=self.at_edit.dateTime().toPython(),
+            occurred_at=self._occurred_at(),
             source_type=self._selected.source_type,
             source_id=self._selected.source_id,
             amount=self.amount_spin.value(),
@@ -299,12 +348,35 @@ class FoodDialog(QDialog):
             note=self.note_edit.toPlainText().strip(),
             serving_id=serving.serving_id if serving else None,
         )
+        if self._record is not None:
+            self._save_edit(draft)
+            return
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         save.setEnabled(False)
         try:
             self._context.record_intake(draft)
         except Exception as exc:
             QMessageBox.critical(self, "饮食未保存", f"无法保存这次饮食记录。\n\n{exc}")
+            save.setEnabled(True)
+            return
+        self.accept()
+
+    def _occurred_at(self):
+        if self._record is not None and self.at_edit.dateTime() == self._original_ui_time:
+            return self._record.occurred_at
+        return self.at_edit.dateTime().toPython()
+
+    def _save_edit(self, replacement: IntakeDraft | None) -> None:
+        save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        save.setEnabled(False)
+        try:
+            self._context.update_intake(self._record.record_id, IntakeEditDraft(
+                occurred_at=self._occurred_at(), amount=self.amount_spin.value(),
+                meal_category=str(self.meal_combo.currentData()), note=self.note_edit.toPlainText(),
+                replacement=replacement,
+            ))
+        except Exception as exc:
+            QMessageBox.critical(self, "饮食未保存", f"无法修改这次饮食记录。\n\n{exc}")
             save.setEnabled(True)
             return
         self.accept()

@@ -132,6 +132,39 @@ class IntakeDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class DailyRecordDTO:
+    kind: Literal["intake", "exercise", "weight"]
+    record_id: int
+    occurred_at: datetime
+    name: str
+    note: str = ""
+    amount: float = 0.0
+    unit: str = ""
+    meal_type: str = "OTHER"
+    energy_kj: float = 0.0
+    duration_min: float = 0.0
+    exercise_type_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IntakeEditDraft:
+    occurred_at: datetime
+    amount: float
+    meal_category: str
+    note: str
+    replacement: IntakeDraft | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExerciseEditDraft:
+    occurred_at: datetime
+    duration_min: float
+    active_kj: float
+    note: str
+    replacement_type_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ExerciseTypeDTO:
     exercise_type_id: int
     name: str
@@ -193,6 +226,8 @@ class FoodDTO:
     fiber_g_per_100g: float | None = None
     fat_g_per_100g: float | None = None
     carbs_g_per_100g: float | None = None
+    legacy_nutrition_available: bool = False
+    basis_nutrition: NutritionContribution = field(default_factory=NutritionContribution)
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +344,12 @@ class UIContext(Protocol):
 
     def get_daily_nutrition(self, day: date) -> DailyNutrition: ...
 
+    def get_daily_records(self, day: date) -> Sequence[DailyRecordDTO]: ...
+
+    def update_intake(self, record_id: int, edit: IntakeEditDraft) -> None: ...
+
+    def update_exercise(self, record_id: int, edit: ExerciseEditDraft) -> None: ...
+
     def has_profile(self) -> bool: ...
 
     def save_initial_profile(self, profile: ProfileDraft) -> None: ...
@@ -386,6 +427,9 @@ __all__ = [
     "CandleDTO",
     "ColorMode",
     "DashboardDTO",
+    "DailyRecordDTO",
+    "IntakeEditDraft",
+    "ExerciseEditDraft",
     "ExerciseDraft",
     "ExerciseSection",
     "ExerciseTypeDTO",

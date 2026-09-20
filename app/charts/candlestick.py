@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal, Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPicture
 from PySide6.QtWidgets import QLabel, QStackedLayout, QToolTip, QWidget
 
@@ -145,6 +145,8 @@ if pg is not None:
 class CandlestickChart(QWidget):
     """Daily OHLC widget with linear kg axis, pan/zoom and hover crosshair."""
 
+    date_selected = Signal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("体重日 K 线")
@@ -182,7 +184,7 @@ class CandlestickChart(QWidget):
         self._plot.setBackground("#FFFFFF")
         self._plot.showGrid(x=True, y=True, alpha=0.14)
         self._plot.setLabel("left", "体重", units="kg")
-        self._plot.setLabel("bottom", "自然日")
+        self._plot.setLabel("bottom", "日期")
         self._plot.setMouseEnabled(x=True, y=True)
         self._plot.getViewBox().setMouseMode(pg.ViewBox.PanMode)
         self._plot.getViewBox().setLogMode(False, False)
@@ -201,6 +203,7 @@ class CandlestickChart(QWidget):
             rateLimit=40,
             slot=self._mouse_moved,
         )
+        self._plot.scene().sigMouseClicked.connect(self._mouse_clicked)
 
         self._stack.addWidget(self._plot)
         self._stack.addWidget(self._empty)
@@ -244,7 +247,7 @@ class CandlestickChart(QWidget):
             self.setAccessibleDescription("暂无体重日线数据")
             return
         self.setAccessibleDescription(
-            f"共 {len(self._data)} 个自然日，最新 " + self._tooltip(self._data[-1])
+            f"共 {len(self._data)} 天，最新 " + self._tooltip(self._data[-1])
         )
 
     def _render(self) -> None:
@@ -267,6 +270,18 @@ class CandlestickChart(QWidget):
             padding=0.0,
         )
         self._stack.setCurrentWidget(self._plot)
+
+    def _mouse_clicked(self, event) -> None:
+        if self._plot is None or not self._data or event.button() != Qt.MouseButton.LeftButton:
+            return
+        view = self._plot.getViewBox()
+        if not view.sceneBoundingRect().contains(event.scenePos()):
+            return
+        x = view.mapSceneToView(event.scenePos()).x()
+        index = int(round(x))
+        if 0 <= index < len(self._data) and abs(x - index) <= 0.5:
+            event.accept()
+            self.date_selected.emit(self._data[index].local_date)
 
     def _mouse_moved(self, event: tuple[object, ...]) -> None:
         if (

@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from .context import FoodDTO, FoodDraft, UIContext
 from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
 from .nutrition import NUTRIENT_CAPTIONS, OptionalNutrientEditor
-from app.nutrition import FOOD_NUTRIENT_FIELDS, format_nutrient
+from app.nutrition import FOOD_NUTRIENT_FIELDS, LEGACY_FOOD_FIELDS, format_nutrient
 from app.energy_units import energy_to_display, energy_unit_label, kcal_to_kj
 
 
@@ -44,6 +44,7 @@ class FoodEditorDialog(QDialog):
         super().__init__(parent)
         self._context = context
         self._food = food
+        self._volume_compat = bool(food and food.legacy_nutrition_available and food.basis_unit == "ml")
         self._energy_unit = context.get_energy_display_unit()
         self.saved_food: FoodDTO | None = None
         self.setWindowTitle("编辑食品" if food else "新建食品")
@@ -52,7 +53,7 @@ class FoodEditorDialog(QDialog):
 
         title = QLabel(self.windowTitle())
         title.setObjectName("pageTitle")
-        helper = QLabel("能量沿用原有基准；每日营养按每 100g 单独维护。修改食品不会改写历史快照。")
+        helper = QLabel("已有营养数据继续有效；未知与零分别保留。修改食品不会改写历史快照。")
         helper.setObjectName("muted")
         helper.setWordWrap(True)
 
@@ -82,6 +83,9 @@ class FoodEditorDialog(QDialog):
         self.basis_unit_combo.addItem("毫升 (ml)", "ml")
         if food and food.basis_unit == "ml":
             self.basis_unit_combo.setCurrentIndex(1)
+        if food and food.legacy_nutrition_available:
+            self.basis_unit_combo.setEnabled(False)
+            self.basis_unit_combo.setToolTip("兼容食品保留原有 g/ml 计量维度；不同维度请新建食品。")
 
         basis_row = QWidget()
         basis_layout = QHBoxLayout(basis_row)
@@ -89,7 +93,7 @@ class FoodEditorDialog(QDialog):
         basis_layout.setSpacing(8)
         basis_layout.addWidget(self.basis_amount_spin, 1)
         basis_layout.addWidget(self.basis_unit_combo)
-        form.addRow("能量 / 旧字段基准 *", basis_row)
+        form.addRow("食品基准 *", basis_row)
 
         self.energy_spin = EnergySpinBox(unit=self._energy_unit)
         self.energy_spin.set_kj_range(0.0, kcal_to_kj(100000.0))
@@ -97,37 +101,38 @@ class FoodEditorDialog(QDialog):
         self.energy_spin.setAccessibleName(
             f"食品能量（{energy_unit_label(self._energy_unit)}）"
         )
-        self.protein_spin = self._number_spin(0.0, 10000.0, 2, food.protein_g if food else 0.0, " g")
-        self.fat_spin = self._number_spin(0.0, 10000.0, 2, food.fat_g if food else 0.0, " g")
-        self.carb_spin = self._number_spin(0.0, 10000.0, 2, food.carb_g if food else 0.0, " g")
-        self.fiber_spin = self._number_spin(0.0, 10000.0, 2, food.fiber_g if food else 0.0, " g")
         form.addRow("能量 *", self.energy_spin)
         nutrient_note = QLabel(
-            "每日营养（每 100g）：勾选“已知”后填写，明确为零可填 0.00。"
-            "未填写是未知。ml 食品没有密度，暂不能换算质量营养。"
+            "营养（原 ml 基准）：已有体积基准营养可直接按份量计算，不换算为克。"
+            if self._volume_compat else
+            "营养（每 100g）：未填写表示未知。兼容食品已有值包括零继续有效；"
+            "ml 食品的每 100g 数据因缺少密度不能用于体积摄入。"
         )
         nutrient_note.setWordWrap(True)
         form.addRow(nutrient_note)
         self.nutrient_editors: dict[str, OptionalNutrientEditor] = {}
-        for field, caption in zip(FOOD_NUTRIENT_FIELDS, NUTRIENT_CAPTIONS, strict=True):
-            editor = OptionalNutrientEditor(caption, getattr(food, field) if food else None)
+        self._initial_nutrients = {}
+        for field, old, caption in zip(FOOD_NUTRIENT_FIELDS, LEGACY_FOOD_FIELDS, NUTRIENT_CAPTIONS, strict=True):
+            value = getattr(food, field) if food else None
+            reference = "100g"
+            if food and food.legacy_nutrition_available and value is None:
+                value = getattr(food, old)
+                if self._volume_compat:
+                    reference = "食品基准 (ml)"
+                else:
+                    value *= 100.0 / food.basis_amount
+            editor = OptionalNutrientEditor(caption, value)
+            editor.known.setAccessibleName(f"{caption} / {reference} 已知")
+            editor.spin.setAccessibleName(f"{caption} / {reference} 克数")
+            if food and food.legacy_nutrition_available:
+                editor.known.setEnabled(False)
+                editor.known.setToolTip("已存兼容营养值继续有效，无法用空值抹去该来源。")
+            if self._volume_compat and getattr(food, field) is not None:
+                editor.setEnabled(False)
+                reference = "100g（无密度，不能换算 ml）"
+            self._initial_nutrients[field] = value
             self.nutrient_editors[field] = editor
-            form.addRow(f"{caption} / 100g", editor)
-
-        # Keep the old editor and its precision semantics available, without
-        # mislabelling its zero-default fields as the new daily nutrition data.
-        legacy = QWidget()
-        legacy_form = QFormLayout(legacy)
-        legacy_form.setContentsMargins(0, 0, 0, 0)
-        for caption, spin in (("旧蛋白质", self.protein_spin), ("旧脂肪", self.fat_spin),
-                              ("旧碳水", self.carb_spin), ("旧膳食纤维", self.fiber_spin)):
-            legacy_form.addRow(caption, spin)
-        legacy.setVisible(False)
-        legacy_toggle = QPushButton("旧版字段（保留兼容，不参与每日营养汇总）")
-        legacy_toggle.setCheckable(True)
-        legacy_toggle.toggled.connect(legacy.setVisible)
-        form.addRow(legacy_toggle)
-        form.addRow(legacy)
+            form.addRow(f"{caption} / {reference}", editor)
 
         self.serving_spin = self._number_spin(
             0.1,
@@ -199,6 +204,19 @@ class FoodEditorDialog(QDialog):
             self.category_combo.setFocus()
             return
 
+        legacy_values = {field: getattr(self._food, field) if self._food else 0.0 for field in LEGACY_FOOD_FIELDS}
+        metadata = {}
+        for field, old in zip(FOOD_NUTRIENT_FIELDS, LEGACY_FOOD_FIELDS, strict=True):
+            value = self.nutrient_editors[field].value()
+            original = getattr(self._food, field) if self._food else None
+            if self._volume_compat:
+                metadata[field] = original
+                if original is None:
+                    legacy_values[old] = value
+            elif self._food and value == self._initial_nutrients[field] and self.basis_amount_spin.value() == self._food.basis_amount:
+                metadata[field] = original
+            else:
+                metadata[field] = value
         draft = FoodDraft(
             food_id=self._food.food_id if self._food else None,
             name=name,
@@ -207,13 +225,10 @@ class FoodEditorDialog(QDialog):
             basis_amount=self.basis_amount_spin.value(),
             basis_unit=str(self.basis_unit_combo.currentData()),  # type: ignore[arg-type]
             kj=self.energy_spin.energy_kj(),
-            protein_g=self.protein_spin.value(),
-            fat_g=self.fat_spin.value(),
-            carb_g=self.carb_spin.value(),
-            fiber_g=self.fiber_spin.value(),
+            **legacy_values,
             default_serving=self.serving_spin.value(),
             is_favorite=self.favorite_check.isChecked(),
-            **{field: editor.value() for field, editor in self.nutrient_editors.items()},
+            **metadata,
         )
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         save.setEnabled(False)
@@ -237,16 +252,12 @@ class FoodLibraryPage(QWidget):
         "品牌",
         "基准",
         "能量",
-        "蛋白质",
-        "脂肪",
-        "碳水",
-        "纤维",
+        "蛋白质（食品基准）",
+        "纤维（食品基准）",
+        "脂肪（食品基准）",
+        "碳水（食品基准）",
         "收藏",
         "状态",
-        "蛋白质 / 100g",
-        "纤维 / 100g",
-        "脂肪 / 100g",
-        "碳水 / 100g",
     )
 
     def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
@@ -269,14 +280,11 @@ class FoodLibraryPage(QWidget):
         self.search_edit.setAccessibleName("搜索食品库")
         self.include_inactive = QCheckBox("显示已停用")
         self.include_inactive.setAccessibleName("显示已停用食品")
-        self.show_legacy = QCheckBox("显示旧版营养字段")
-        self.show_legacy.setToolTip("原基准下的兼容字段，不参与新的每日营养汇总")
 
         search_row = QHBoxLayout()
         search_row.setSpacing(10)
         search_row.addWidget(self.search_edit, 1)
         search_row.addWidget(self.include_inactive)
-        search_row.addWidget(self.show_legacy)
 
         self.table = QTableWidget(0, len(self._COLUMNS))
         self.table.setHorizontalHeaderLabels(self._COLUMNS)
@@ -288,9 +296,6 @@ class FoodLibraryPage(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAccessibleName("食品列表")
-        for index in range(5, 9):
-            self.table.setColumnHidden(index, True)
-        self.show_legacy.toggled.connect(self._show_legacy_columns)
         self.table.itemSelectionChanged.connect(self._update_actions)
         self.table.itemDoubleClicked.connect(lambda _item: self.edit_selected())
 
@@ -349,8 +354,6 @@ class FoodLibraryPage(QWidget):
         self.table.setSortingEnabled(False)
         columns = list(self._COLUMNS)
         columns[4] = f"能量（{energy_unit_label(self._energy_unit)}）"
-        for index in range(5, 9):
-            columns[index] = "旧" + columns[index] + "（原基准）"
         self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(0)
         for food in foods:
@@ -362,19 +365,15 @@ class FoodLibraryPage(QWidget):
                 food.brand or "—",
                 f"{food.basis_amount:.2f} {food.basis_unit}",
                 f"{energy_to_display(food.kj, self._energy_unit):.2f}",
-                f"{food.protein_g:.2f} g",
-                f"{food.fat_g:.2f} g",
-                f"{food.carb_g:.2f} g",
-                f"{food.fiber_g:.2f} g",
+                *(format_nutrient(value) for value in food.basis_nutrition.values.as_tuple()),
                 "是" if food.is_favorite else "否",
                 "正常" if food.active else "已停用",
-                *(format_nutrient(getattr(food, field)) for field in FOOD_NUTRIENT_FIELDS),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, food)
-                if column in (4, 5, 6, 7, 8, 11, 12, 13, 14):
+                if column in (4, 5, 6, 7, 8):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, column, item)
         self.table.setSortingEnabled(True)
@@ -383,10 +382,6 @@ class FoodLibraryPage(QWidget):
         self.table.setVisible(bool(foods))
         self._loaded = True
         self._update_actions()
-
-    def _show_legacy_columns(self, visible: bool) -> None:
-        for index in range(5, 9):
-            self.table.setColumnHidden(index, not visible)
 
     def selected_food(self) -> FoodDTO | None:
         row = self.table.currentRow()

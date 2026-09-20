@@ -6,6 +6,7 @@ from typing import cast
 
 from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDateTimeEdit,
     QDialog,
     QDialogButtonBox,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .context import ExerciseDraft, ExerciseSection, ExerciseTypeDTO, UIContext
+from .context import DailyRecordDTO, ExerciseEditDraft, ExerciseDraft, ExerciseSection, ExerciseTypeDTO, UIContext
 from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
 from app.energy_units import energy_unit_label, format_energy, kcal_to_kj
 
@@ -28,20 +29,25 @@ from app.energy_units import energy_unit_label, format_energy, kcal_to_kj
 class ExerciseDialog(QDialog):
     _SECTIONS: tuple[ExerciseSection, ...] = ("recent", "favorites", "all")
 
-    def __init__(self, context: UIContext, parent: QWidget | None = None) -> None:
+    def __init__(self, context: UIContext, parent: QWidget | None = None, *, record: DailyRecordDTO | None = None) -> None:
         super().__init__(parent)
         self._context = context
         self._energy_unit = context.get_energy_display_unit()
         self._selected: ExerciseTypeDTO | None = None
-        self.setWindowTitle("记录运动")
+        self._record = record
+        self.setWindowTitle("编辑运动" if record else "记录运动")
         self.setMinimumSize(560, 560)
-        self.setAccessibleName("运动录入")
+        self.setAccessibleName("运动编辑" if record else "运动录入")
 
-        title = QLabel("记录额外运动消耗")
+        title = QLabel(self.windowTitle())
         title.setObjectName("pageTitle")
-        helper = QLabel("这里填写额外运动消耗，不包含静息基础消耗。选择项目后会带入上次值。")
+        helper = QLabel("额外运动消耗不包含静息基础消耗。" if record else
+                        "这里填写额外运动消耗，不包含静息基础消耗。选择项目后会带入上次值。")
         helper.setObjectName("muted")
         helper.setWordWrap(True)
+        self.replace_type = QCheckBox("更换运动项目")
+        self.replace_type.setVisible(record is not None)
+        self.replace_type.toggled.connect(self._toggle_replacement)
 
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("运动项目来源")
@@ -104,10 +110,31 @@ class ExerciseDialog(QDialog):
         layout.setSpacing(14)
         layout.addWidget(title)
         layout.addWidget(helper)
+        layout.addWidget(self.replace_type)
         layout.addWidget(self.tabs, 1)
         layout.addLayout(form)
         layout.addWidget(self.buttons)
         self._load_all_sections()
+        if record is not None:
+            self.tabs.setVisible(False)
+            self.selected_label.setText(record.name)
+            self.at_edit.setDateTime(QDateTime(record.occurred_at.replace(tzinfo=None)))
+            self._original_ui_time = self.at_edit.dateTime()
+            self.duration_spin.setRange(0.0, max(1440.0, record.duration_min))
+            self.duration_spin.setDecimals(2)
+            self.duration_spin.setValue(record.duration_min)
+            self.energy_spin.set_kj_range(0.0, max(kcal_to_kj(10000.0), record.energy_kj))
+            self.energy_spin.set_energy_kj(record.energy_kj)
+            self.note_edit.setPlainText(record.note)
+            self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(True)
+
+    def _toggle_replacement(self, checked: bool) -> None:
+        self.tabs.setVisible(checked)
+        self._selected = None
+        for widget in self.lists:
+            widget.setCurrentRow(-1)
+        self.selected_label.setText("请选择运动项目" if checked else self._record.name)
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(not checked)
 
     def _load_all_sections(self) -> None:
         for section, widget in zip(self._SECTIONS, self.lists, strict=True):
@@ -144,6 +171,8 @@ class ExerciseDialog(QDialog):
         self._selection_changed(widget.currentItem())
 
     def _selection_changed(self, item: QListWidgetItem | None, *_args: object) -> None:
+        if self._record is not None and not self.replace_type.isChecked():
+            return
         if item is None:
             self._selected = None
         else:
@@ -155,11 +184,33 @@ class ExerciseDialog(QDialog):
             return
         exercise = self._selected
         self.selected_label.setText(exercise.name)
+        if self._record is not None:
+            return
         self.duration_spin.setValue(exercise.last_duration_min or exercise.default_duration_min)
         kj = exercise.last_active_kj
         self.energy_spin.set_energy_kj(exercise.default_active_kj if kj is None else kj)
 
     def _save(self) -> None:
+        if self._record is not None:
+            if self.replace_type.isChecked() and self._selected is None:
+                QMessageBox.warning(self, "请选择项目", "请选择要更换的运动项目。")
+                return
+            save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+            save.setEnabled(False)
+            try:
+                occurred = (self._record.occurred_at if self.at_edit.dateTime() == self._original_ui_time
+                            else self.at_edit.dateTime().toPython())
+                self._context.update_exercise(self._record.record_id, ExerciseEditDraft(
+                    occurred_at=occurred, duration_min=self.duration_spin.value(),
+                    active_kj=self.energy_spin.energy_kj(), note=self.note_edit.toPlainText(),
+                    replacement_type_id=self._selected.exercise_type_id if self.replace_type.isChecked() else None,
+                ))
+            except Exception as exc:
+                QMessageBox.critical(self, "运动未保存", f"无法修改这次运动。\n\n{exc}")
+                save.setEnabled(True)
+                return
+            self.accept()
+            return
         if self._selected is None:
             QMessageBox.warning(self, "请选择项目", "请先选择一个运动项目。")
             return
