@@ -4,10 +4,14 @@ This repository is the CalorieK project.
 
 Linear:
 - Workspace: Atticum
-- Team: CalorieK
-- Team key: CAL
+- Team: Atticumlos
+- Issue prefix: CAL
 - Project: CalorieK
-- Current milestone: v0.0.1
+- Current milestone: v0.0.3
+
+The Linear fields above are also read by the handoff packer; update them here
+when project metadata changes. The development milestone is not an application
+version or a claim that a release has been published.
 
 When a task references a Linear issue such as CAL-2:
 
@@ -22,10 +26,17 @@ When a task references a Linear issue such as CAL-2:
 9. ChatGPT reviews the handoff ZIP and generates a task-specific Windows BAT.
 10. The user runs that BAT locally. Its results are the authoritative validation evidence for the issue.
 11. Only after ChatGPT review and Windows validation pass should an implementation issue be marked Done.
-12. CAL-5 owns the final release gate. Packaging, tag creation, push, and GitHub Release publication are not normal Codex tasks.
+12. The dedicated release-validation issue for the target version/milestone owns the release gate. Release packaging, tag creation, push, and GitHub Release publication require explicit authorization and are not normal implementation tasks.
 
 Release process:
 - Implementation changes remain uncommitted until review.
 - Test execution belongs to the ChatGPT-generated Windows BAT workflow.
-- CAL-5 is the release gate for v0.0.1.
+- Use the dedicated release-validation issue for the target version/milestone, not a historical issue as a permanent gate.
+- Independent implementation review and Windows validation precede release packaging/publication. Source changes alone do not constitute a release.
 - A release is complete only after the packaged Windows ZIP is validated and the actual GitHub Release asset is re-downloaded and smoke-tested.
+
+Review handoff (not a release build):
+- The user runs `package_caloriek_handoff.bat`; Codex must not run it unless explicitly authorized.
+- Default: source/docs/tests/scripts and Git/environment metadata, without historical test results or runtime data.
+- `withresults` adds local validation-result directories; `withdata` adds repository-local data only after an explicit privacy confirmation. Both options may be combined in either order.
+- Metadata may reveal local paths and Git remote information. Inspect every handoff before sharing; never publish it as a Windows release asset.

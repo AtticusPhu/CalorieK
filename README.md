@@ -1,16 +1,18 @@
-# CalorieK v0.0.2（源码准备，尚待独立验证）
+# CalorieK（已发布基线 v0.0.2 / v0.0.3 开发中）
 
-CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股票日 K 线的视觉逻辑记录实际体重，并把摄入、基础/日常消耗与额外运动消耗用于当日预测和个人能量模型校准。当前源码为 `0.0.2`，在 v0.0.1 基础上增加独立的每日营养构成；应用、schema 和能量模型版本相互独立。本次源码修改不表示已经测试、打包或发布。
+CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股票日 K 线的视觉逻辑记录实际体重，并把摄入、基础/日常消耗与额外运动消耗用于当日预测和个人能量模型校准。**v0.0.2 已完成发布前独立验证并发布，是 CAL-15 时点的最新已发布基线；当前开发里程碑为 v0.0.3，尚未发布。** 应用元数据仍为 `0.0.2`，schema 为 `3`；开发里程碑不触发版本号自动变更。
+
+本文同时说明当前仓库源码；标注 CAL-12 等后续开发项的内容不代表既有 Release 资产已自动更新。应用、schema 和计算版本相互独立，源码修改不等于发布。
 
 核心原则是：**实际称重是事实，理论模型只负责预测和补足单次称重的 K 线缺失端。** 预测值不会写入实际称重表；饮食、食谱、运动和资料版本均长期保留为可重算的原始数据。
 
 ## Windows 用户：下载与运行
 
-1. 打开 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases)，选择实际已发布版本的 Windows x64 ZIP。v0.0.2 源码元数据不代表已有可下载资产；旧版 v0.0.1 不包含本页新增的每日营养功能。
+1. 打开 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases)，选择已发布 v0.0.2 的 Windows x64 ZIP；后续版本以实际发布说明和资产为准。旧版 v0.0.1 不包含每日营养功能。
 2. **解压整个 ZIP** 到可访问的文件夹；不要直接在压缩包内启动，也不要只复制 EXE。
 3. 打开解压后的 `CalorieK` 文件夹，运行 `CalorieK.exe`；保留同级 `_internal` 等依赖目录。
 
-打包版**不需要安装 Python**，运行时无需联网、账号或云服务。实际是否已发布以 Releases 中的资产为准；如果尚未提供上述 ZIP，请等待发布，不要把 GitHub 自动生成的 `Source code` ZIP 当作 Windows 程序。
+打包版**不需要安装 Python**，运行时无需联网、账号或云服务。请下载对应 Release 附件中的 Windows ZIP，不要把 GitHub 自动生成的 `Source code` ZIP 当作 Windows 程序；开发分支变化不会自动更新既有发布资产。
 
 首次启动会引导建立个人资料。默认数据目录是 `%LOCALAPPDATA%\CalorieK\data`，不在解压目录中。升级、备份和常见启动问题见 [Windows Release 使用说明](docs/WINDOWS_RELEASE.md)。
 
@@ -37,7 +39,7 @@ CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股�
 
 | 标识 | 当前值 | 含义 |
 | --- | --- | --- |
-| `APP_VERSION` | `0.0.2` | 待验证源码版本；窗口标题、Qt 应用元数据、备份清单和 JSON 导出共用 |
+| `APP_VERSION` | `0.0.2` | 已发布基线的应用标识，当前开发分支暂沿用；窗口标题、Qt 应用元数据、备份清单和 JSON 导出共用 |
 | `SCHEMA_VERSION` | `3` | v2 上增量添加可空营养字段 |
 | `CALCULATION_VERSION` | `v2-simple-energy-kj-1` | kJ / schema-v2 世代的派生计算结果标识，不随文档或显示调整而改变 |
 
@@ -130,7 +132,7 @@ python main.py --version
 - 点击 K 线日期打开时间线，可编辑饮食与运动。普通编辑缩放原快照；明确更换来源或单位时重新保存快照。跨日期编辑从最早受影响日期重算，并刷新营养、Treemap、K 线和首页。见 [CAL-12 说明](docs/CAL12_IMPLEMENTATION.md)。
 - 营养不反推能量、不参与体重预测，也没有营养目标、评分、建议、诊断、钠/糖或微量营养素扩展。
 
-迁移细节和后续人工验证清单见 [CAL-8 交接说明](docs/CAL8_NUTRITION.md)。
+CAL-8 已完成，其测试已在完成的 v0.0.2 开发线上执行；迁移细节见 [CAL-8 历史交接说明](docs/CAL8_NUTRITION.md)。该历史文档中的“实现时未执行”记录不代表最终发布状态。
 
 ## 核心计算约定
 
@@ -168,7 +170,7 @@ python main.py --version
 python -m unittest discover -s tests -t . -v
 ```
 
-用例覆盖核心计算、schema-v1 → v2 → v3 迁移及失败保护、历史营养快照、NULL/零与每日汇总、跨午夜代谢、30 日窗口/EWMA、缓存重算、kJ/kcal 输入与显示、Treemap 几何不变、浅色控件、备份恢复和版本元数据。新增 CAL-8 用例尚未执行。Qt 缺失时相关用例会跳过；跳过不等于 Windows GUI 验证通过。
+用例覆盖核心计算、schema-v1 → v2 → v3 迁移及失败保护、历史营养快照、NULL/零与每日汇总、跨午夜代谢、30 日窗口/EWMA、缓存重算、kJ/kcal 输入与显示、Treemap 几何不变、浅色控件、备份恢复和版本元数据。CAL-8 的测试已随完成的 v0.0.2 开发线执行；后续改动仍需对应任务的独立验证。Qt 缺失时相关用例会跳过；跳过不等于 Windows GUI 验证通过。
 
 安装 GUI 依赖后，维护者可在临时 PowerShell 会话中按审核后的验证计划执行离屏 smoke；离屏检查不能代替 Windows 原生弹窗的人工检查：
 
@@ -201,7 +203,7 @@ PyInstaller 成功后，脚本还会用临时数据目录和 Qt `offscreen` 平�
 
 打包配置为 [`CalorieK.spec`](CalorieK.spec)，并显式包含 SQLite schema。用户数据库不会打入安装包，也不会因重新打包被覆盖。
 
-最终 Windows ZIP 必须包含整个 `dist\CalorieK` 目录，而不是单独 EXE。**CAL-5 是 v0.0.1 发布关卡**；后续版本同样需要另行授权的发布验证流程、Windows ZIP 独立验证，以及实际 GitHub Release 资产重新下载后的 smoke。构建脚本成功不代表 Release 已完成。CAL-8 仅修改源码、文档和待执行测试，不执行这些操作。
+最终 Windows ZIP 必须包含整个 `dist\CalorieK` 目录，而不是单独 EXE。每个目标版本/里程碑均由其专用发布验证 issue 把关，不把历史 issue 固定为未来版本的发布关卡。实现审核和 Windows 独立验证通过后，才能进入明确授权的发布构建/打包流程；还需验证最终 Windows ZIP，并重新下载实际 GitHub Release 资产进行 smoke。构建脚本成功不代表 Release 已完成。
 
 ## 目录概览
 
@@ -223,9 +225,32 @@ data/                  # 源码运行默认外置数据目录
 
 ## 仓库卫生
 
+工作流元数据以 [`AGENTS.md`](AGENTS.md) 为准：workspace `Atticum`、team `Atticumlos`、project `CalorieK`、issue prefix `CAL`、当前开发里程碑 `v0.0.3`。GitHub 仓库为 `AtticusPhu/CalorieK`。
+
 [`.gitignore`](.gitignore) 排除虚拟环境、`.tools`、构建产物、实际数据库及 WAL/SHM、数据备份、导出、缓存、测试结果、handoff/Release 归档、临时日志及根目录任务专用 `TEST_CAL*.bat`。`data/.gitkeep`、正式构建/运行脚本和源码测试保留在版本控制范围。
 
 忽略规则不会删除本地文件，也不能移除已跟踪文件或清理 Git 历史。自定义名称的 JSON 导出应保存在 `exports/` 或仓库外；提交/发布前仍需人工检查待提交内容，避免个人健康数据和本机路径进入公共仓库。handoff ZIP 与 Release ZIP 是不同产物；前者可能包含测试结果和本机信息，不应公开发布为程序资产。
+
+### 本地审核 handoff
+
+从仓库根目录在 CMD 中运行下列命令（PowerShell 中使用 `.\package_caloriek_handoff.bat`）：
+
+```bat
+package_caloriek_handoff.bat
+package_caloriek_handoff.bat withresults
+package_caloriek_handoff.bat withdata
+package_caloriek_handoff.bat withresults withdata
+package_caloriek_handoff.bat withdata withresults
+```
+
+- 默认只收集 Git 已跟踪及未忽略的工作区源文件，仍明确过滤运行数据和构建产物：包含符合规则的应用源码、测试、文档、配置和构建/运行脚本；保留 `data/.gitkeep`。
+- `withresults` 额外收集仓库内 `test_results`、`test_results_*`、`chatgpt_test_results`、`chatgpt_test_results_*` 目录中的合规文件；没有这些目录也可完成。
+- `withdata` 额外收集仓库本地 `data/`、SQLite 主文件/sidecar、`backups/`、`exports/` 及已识别的数据配置/导出文件。先关闭 CalorieK 和所有数据库写入程序，再在强隐私警告后输入 **`INCLUDE DATA`**；其他输入或取消均不生成包。这是原始文件交接，不是 SQLite 一致性备份，不能替代应用备份功能。
+- 两个参数可按任意顺序组合，大小写不敏感；重复或未知参数返回用法错误，不生成文件。单独 `withdata` 不带测试结果，单独 `withresults` 不带 SQLite/个人数据。
+- 所有模式均排除 `.git`、虚拟环境、`.tools`、build/dist/release/releases、缓存、旧 `_handoff`、旧归档与校验文件、临时根目录 `TEST_CAL*.bat`、秘密配置和二进制构建产物。不会遍历 junction/symlink，也不会读取 `%LOCALAPPDATA%\CalorieK` 或跟随 `data_location.json` 指向的外部目录。
+- Git 状态、日志、remotes、环境/版本、项目树和 SHA-256 清单写入新包的 `_handoff/`。Git patch 也按文件排除规则筛选，重命名按删除/新增表示，避免用 diff 绕过数据排除。状态/文件名清单、remotes 仍可能含私人路径或仓库信息，分享前必须审阅。
+
+BAT 入口调用同目录 [`package_caloriek_handoff.ps1`](package_caloriek_handoff.ps1)，集中维护文件规则和字面路径处理；使用既有 Windows PowerShell 5.1+ 依赖及 Git，不依赖 GitHub 在线状态。输出为根目录唯一命名的 `CalorieK_handoff_*.zip` 和 `.sha256.txt`。脚本不运行测试、应用、构建、PyInstaller 或 Git 写操作，也不修改源文件/数据库；环境采集只查询工具和已安装包版本。退出码 `0` 表示完成或明确取消（见终端提示），`2` 表示参数错误，`1` 表示失败。
 
 ## 当前边界
 

@@ -1,10 +1,16 @@
-# CalorieK v0.0.2：Windows 使用说明草案
+# CalorieK：Windows 使用与发布流程
 
-面向 Windows 10/11 x64 用户。应用本地、离线运行；打包版不需要安装 Python。v0.0.2 目前仅准备源码，尚待审核和 Windows 独立验证，本文不表示已经打包或发布。实际可下载版本以 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases) 为准。
+面向 Windows 10/11 x64 用户。应用本地、离线运行；打包版不需要安装 Python。
+
+## 已发布基线与当前开发
+
+v0.0.2 已完成发布前独立验证并发布，是 CAL-15 时点的最新已发布 Windows 基线；CAL-8 已完成，其测试在完成的 v0.0.2 开发线上执行。下载以 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases) 中的实际资产为准。
+
+当前仓库开发里程碑为 v0.0.3，尚未发布；`APP_VERSION=0.0.2`、`SCHEMA_VERSION=3`、`CALCULATION_VERSION=v2-simple-energy-kj-1` 仍保持不变。本文标注 CAL-12 等后续开发项的说明描述当前源码，不表示已发布 ZIP 被更新，也不承诺未发布资产、日期或校验值。
 
 ## 下载与首次启动
 
-1. 在实际已发布 Release 的 Assets 中下载对应版本的 Windows x64 ZIP。没有资产则说明尚未提供此版 Windows 程序；`Source code (zip)` 不是打包应用。旧版 v0.0.1 不包含每日营养卡片。
+1. 在 v0.0.2 Release（或后续实际发布版本）的 Assets 中下载对应 Windows x64 ZIP；`Source code (zip)` 不是打包应用。旧版 v0.0.1 不包含每日营养卡片。
 2. 解压全部内容，保留 `CalorieK` 文件夹的完整结构，包括 `CalorieK.exe`、`_internal` 及其他随包文件。不要在 ZIP 内直接运行，也不要将 EXE 单独拖出。
 3. 双击 `CalorieK.exe`，按向导填写个人资料和当前实际体重。之后从首页记录饮食、运动和称重。
 4. 在“设置与数据”中选择 kJ 或 kcal 并保存。新用户、从旧库升级的用户默认使用 kJ；切换只改变显示/输入单位。
@@ -51,7 +57,7 @@
 - 缺少任何摄入的营养数据时显示 **部分记录无营养数据**；数字只是已知部分合计。除上述获批的旧 v0.0.2 窄范围修复外，不回填历史；全部未知显示“未知”，无记录显示 `0.00 g` 并注明没有记录。
 - ml 不等于 g。兼容体积食品沿用原 ml 基准比例；每 100g 元数据不能用于 ml 摄入，不猜测密度。
 - 点击 K 线日期可查看按时间排序的饮食、运动和称重。可编辑饮食/运动，普通修改保留原快照；明确更换来源或单位后才重新计算快照。
-- 仅记录和展示，不提供营养目标、评分或饮食建议。新功能仍须按 [CAL-12 交接说明](CAL12_IMPLEMENTATION.md) 独立验证。
+- 仅记录和展示，不提供营养目标、评分或饮食建议。当前源码的兼容性与时间线编辑细节见 [CAL-12 交接说明](CAL12_IMPLEMENTATION.md)；历史实现交接记录不替代对应版本的最终发布验证证据。
 
 ## kJ、kcal 与模型
 
@@ -67,4 +73,13 @@
 - 无法备份、迁移或恢复：保留完整错误信息，检查磁盘空间、目录写权限，以及是否有其他 CalorieK/SQLite 工具正在使用该库。
 - 提交问题时说明 Windows 版本、程序版本（主窗口标题）和错误文本；截图与日志先去掉健康数据、姓名和个人路径。不要公开上传整个数据库、备份或 handoff ZIP。
 
-CAL-5 是 v0.0.1 发布关卡。v0.0.2 的打包、发布及资产重新下载验证需要另行授权；CAL-8 不执行这些步骤。本文的存在不表示验证或发布通过。源码运行、人工测试和构建入口见 [README](../README.md)。
+## 后续版本的发布流程（维护者）
+
+每个目标版本/里程碑由其专用发布验证 issue 把关，不将 CAL-5、CAL-9 或其他历史 issue 作为永久发布关卡。工作流元数据见 [AGENTS.md](../AGENTS.md)：workspace `Atticum`、team `Atticumlos`、project `CalorieK`、issue prefix `CAL`、当前开发里程碑 `v0.0.3`。
+
+1. Codex 在任务范围内修改源码/文档后停止，默认不执行测试、构建、发布或 Git 写操作。
+2. 用户运行 `package_caloriek_handoff.bat`，交 ChatGPT 独立审核并生成任务专用 Windows BAT；用户执行后的结果是独立验证证据。
+3. 实现审核和 Windows 独立验证通过后，才进入目标版本专用发布关卡下明确授权的构建/打包；不是每次源码修改都要发布。
+4. 发布包必须包含完整 one-folder 程序目录；验证最终 Windows ZIP，再按授权发布，并重新下载实际 Release 资产进行 smoke。只有这些步骤完成才算发布完成。
+
+上述流程面向未来版本，不否定已完成的 v0.0.2 发布。审核 handoff 默认不带运行数据和历史验证结果；可用 `withresults`、经隐私确认的 `withdata`，或两者任意顺序组合。它不是用户可运行的 Windows Release ZIP。完整命令、排除规则、源码运行和构建入口见 [README](../README.md)。
