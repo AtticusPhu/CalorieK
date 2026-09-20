@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -336,16 +336,26 @@ class Database:
             )
             connection.execute("UPDATE daily_metrics_cache SET is_dirty = 0")
 
-    def get_setting(self, key: str, default: str | None = None) -> str | None:
-        with self.connection() as connection:
+    def get_setting(
+        self, key: str, default: str | None = None, *,
+        connection: sqlite3.Connection | None = None,
+    ) -> str | None:
+        with (nullcontext(connection) if connection is not None else self.connection()) as connection:
             row = connection.execute(
                 "SELECT value FROM app_settings WHERE key = ?", (key,)
             ).fetchone()
         return default if row is None else str(row[0])
 
-    def set_setting(self, key: str, value: str) -> None:
+    def set_setting(
+        self, key: str, value: str, *, connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Upsert a setting, optionally inside a caller-owned transaction.
+
+        A supplied connection is never committed, rolled back, or closed here.
+        Without one, retain the standalone atomic-write behavior.
+        """
         timestamp = now_iso()
-        with self.transaction() as connection:
+        with (nullcontext(connection) if connection is not None else self.transaction()) as connection:
             connection.execute(
                 "INSERT INTO app_settings(key, value, updated_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "

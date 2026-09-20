@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import sqlite3
+from contextlib import nullcontext
 from datetime import date, datetime, time
 from typing import Any
 
@@ -152,26 +154,33 @@ class ProfileService:
             self.db.mark_dirty(min(revision_date, measured_date), connection=connection)
             return int(cursor.lastrowid)
 
-    def get_profile(self) -> dict[str, Any] | None:
-        with self.db.connection() as connection:
+    def get_profile(
+        self, *, connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        with (nullcontext(connection) if connection is not None else self.db.connection()) as connection:
             row = connection.execute("SELECT * FROM profile WHERE id = 1").fetchone()
         return row_to_dict(row)
 
-    def get_current_profile(self) -> dict[str, Any] | None:
-        profile = self.get_profile()
+    def get_current_profile(
+        self, *, connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        profile = self.get_profile(connection=connection)
         if profile is None:
             return None
-        revision = self.get_revision_for_date(date.today()) or self.get_latest_revision()
+        revision = (
+            self.get_revision_for_date(date.today(), connection=connection)
+            or self.get_latest_revision(connection=connection)
+        )
         if revision:
             profile.update(revision)
             profile["profile_id"] = 1
         return profile
 
     def get_revision_for_date(
-        self, value: date | datetime | str
+        self, value: date | datetime | str, *, connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any] | None:
         target = normalize_date(value)
-        with self.db.connection() as connection:
+        with (nullcontext(connection) if connection is not None else self.db.connection()) as connection:
             row = connection.execute(
                 "SELECT * FROM profile_revisions "
                 "WHERE profile_id = 1 AND effective_from <= ? "
@@ -180,8 +189,10 @@ class ProfileService:
             ).fetchone()
         return row_to_dict(row)
 
-    def get_latest_revision(self) -> dict[str, Any] | None:
-        with self.db.connection() as connection:
+    def get_latest_revision(
+        self, *, connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        with (nullcontext(connection) if connection is not None else self.db.connection()) as connection:
             row = connection.execute(
                 "SELECT * FROM profile_revisions WHERE profile_id = 1 "
                 "ORDER BY effective_from DESC, id DESC LIMIT 1"
@@ -210,16 +221,22 @@ class ProfileService:
         bmr_formula: str | None = None,
         note: str | None = None,
         update_note: bool = False,
+        connection: sqlite3.Connection | None = None,
     ) -> int | None:
         """Update current metadata and append/replace an effective-day revision.
 
         Repeated edits on the same effective date replace that day's revision;
         earlier effective dates remain immutable and continue to drive history.
+        A supplied connection participates in the caller's transaction, including
+        reads and dirty/cache writes; this method never commits or closes it.
         """
 
         target_date = normalize_date(effective_from or date.today())
-        current = self.get_revision_for_date(target_date) or self.get_latest_revision()
-        profile = self.get_profile()
+        current = (
+            self.get_revision_for_date(target_date, connection=connection)
+            or self.get_latest_revision(connection=connection)
+        )
+        profile = self.get_profile(connection=connection)
         if profile is None or current is None:
             raise LookupError("profile is not initialized")
 
@@ -264,7 +281,7 @@ class ProfileService:
         )
         timestamp = now_iso()
         revision_id: int | None = None
-        with self.db.transaction() as connection:
+        with (nullcontext(connection) if connection is not None else self.db.transaction()) as connection:
             connection.execute(
                 "UPDATE profile SET gender = ?, birth_date = ?, note = ?, updated_at = ? "
                 "WHERE id = 1",

@@ -709,49 +709,54 @@ class ApplicationContext:
 
     @staticmethod
     def _apply_settings(database: Database, settings: SettingsDraft) -> bool:
-        profile = ProfileService(database)
-        current = profile.get_current_profile() or {}
-        # Presentation changes must not create a profile revision, invalidate
-        # caches, or rewrite a high-precision energy-to-weight coefficient.
-        profile_changed = (
-            current.get("gender") != settings.sex
-            or current.get("birth_date") != settings.birth_date.isoformat()
-            or current.get("height_cm") != settings.height_cm
-            or time.fromisoformat(str(current.get("wake_time", "00:00"))) != settings.wake_time
-            or time.fromisoformat(str(current.get("sleep_time", "00:00"))) != settings.sleep_time
-            or current.get("awake_multiplier") != settings.awake_multiplier
-            or current.get("sleep_multiplier") != settings.sleep_multiplier
-        )
-        if profile_changed:
-            profile.update_profile(
-                effective_from=date.today(),
-                gender=settings.sex,
-                birth_date=settings.birth_date,
-                height_cm=settings.height_cm,
-                wake_time=settings.wake_time.isoformat(),
-                sleep_time=settings.sleep_time.isoformat(),
-                awake_multiplier=settings.awake_multiplier,
-                sleep_multiplier=settings.sleep_multiplier,
+        """Commit settings and invalidation together, before any model refresh."""
+        with database.transaction() as connection:
+            profile = ProfileService(database)
+            current = profile.get_current_profile(connection=connection) or {}
+            # Presentation changes must not create a profile revision, invalidate
+            # caches, or rewrite a high-precision energy-to-weight coefficient.
+            profile_changed = (
+                current.get("gender") != settings.sex
+                or current.get("birth_date") != settings.birth_date.isoformat()
+                or current.get("height_cm") != settings.height_cm
+                or time.fromisoformat(str(current.get("wake_time", "00:00"))) != settings.wake_time
+                or time.fromisoformat(str(current.get("sleep_time", "00:00"))) != settings.sleep_time
+                or current.get("awake_multiplier") != settings.awake_multiplier
+                or current.get("sleep_multiplier") != settings.sleep_multiplier
             )
-        try:
-            old_kj = float(database.get_setting("kj_per_kg", str(DEFAULT_KJ_PER_KG)) or DEFAULT_KJ_PER_KG)
-        except (TypeError, ValueError):
-            old_kj = None
-        for key, value in (
-            ("candle_color_mode", settings.candle_color_mode),
-            ("treemap_color_mode", settings.treemap_color_mode),
-            ("energy_display_unit", settings.energy_display_unit),
-        ):
-            if database.get_setting(key) != value:
-                database.set_setting(key, value)
-        if old_kj != settings.kj_per_kg:
-            database.set_setting("kj_per_kg", str(settings.kj_per_kg))
-            with database.connection() as connection:
+            if profile_changed:
+                profile.update_profile(
+                    effective_from=date.today(),
+                    gender=settings.sex,
+                    birth_date=settings.birth_date,
+                    height_cm=settings.height_cm,
+                    wake_time=settings.wake_time.isoformat(),
+                    sleep_time=settings.sleep_time.isoformat(),
+                    awake_multiplier=settings.awake_multiplier,
+                    sleep_multiplier=settings.sleep_multiplier,
+                    connection=connection,
+                )
+            try:
+                old_kj = float(database.get_setting(
+                    "kj_per_kg", str(DEFAULT_KJ_PER_KG), connection=connection,
+                ) or DEFAULT_KJ_PER_KG)
+            except (TypeError, ValueError):
+                old_kj = None
+            for key, value in (
+                ("candle_color_mode", settings.candle_color_mode),
+                ("treemap_color_mode", settings.treemap_color_mode),
+                ("energy_display_unit", settings.energy_display_unit),
+            ):
+                if database.get_setting(key, connection=connection) != value:
+                    database.set_setting(key, value, connection=connection)
+            if old_kj != settings.kj_per_kg:
+                database.set_setting("kj_per_kg", str(settings.kj_per_kg), connection=connection)
                 row = connection.execute(
                     "SELECT MIN(local_date) FROM weight_measurements WHERE active = 1"
                 ).fetchone()
-            if row and row[0]:
-                database.mark_dirty(str(row[0]))
+                if row and row[0]:
+                    database.mark_dirty(str(row[0]), connection=connection)
+        # Exiting the transaction must succeed before callers refresh/rebuild.
         return profile_changed or old_kj != settings.kj_per_kg
 
     def _relocate_data_with_settings(
@@ -791,6 +796,10 @@ class ApplicationContext:
             for suffix in ("-wal", "-shm"):
                 Path(f"{stage}{suffix}").unlink(missing_ok=True)
             os.replace(stage, target)
+            # Prepare every destination service before publishing the preference.
+            # A bind/initialization failure must leave the live context untouched.
+            prepared = ApplicationContext(destination)
+            prepared._seed_exercise_shortcuts()
             save_data_dir_preference(destination)
         except BaseException:
             # Cleanup must never hide the original relocation error (for example,
@@ -800,14 +809,16 @@ class ApplicationContext:
                 Path(f"{stage}-wal"),
                 Path(f"{stage}-shm"),
                 target,
+                Path(f"{target}-wal"),
+                Path(f"{target}-shm"),
             ):
                 try:
                     artifact.unlink(missing_ok=True)
                 except OSError:
                     pass
             raise
-        self._bind_data_dir(destination)
-        self._seed_exercise_shortcuts()
+        # No filesystem or database work remains after preference publication.
+        self.__dict__.update(prepared.__dict__)
 
     def backup_data(self, destination: Path) -> Path:
         return self.backups.create_backup(destination)
