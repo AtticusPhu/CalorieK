@@ -4,13 +4,13 @@
 
 ## 已发布基线与当前开发
 
-v0.0.2 已完成发布前独立验证并发布，是 CAL-15 时点的最新已发布 Windows 基线；CAL-8 已完成，其测试在完成的 v0.0.2 开发线上执行。下载以 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases) 中的实际资产为准。
+v0.0.3 为当前公开 Windows 版本；其发布基线已完成 CAL-13、CAL-14、CAL-16 独立验证与长历史性能验证。下载以 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases) 中的实际资产为准。
 
-当前仓库开发里程碑为 v0.0.3，尚未发布；`APP_VERSION=0.0.2`、`SCHEMA_VERSION=3`、`CALCULATION_VERSION=v2-simple-energy-kj-1` 仍保持不变。本文标注 CAL-12 等后续开发项的说明描述当前源码，不表示已发布 ZIP 被更新，也不承诺未发布资产、日期或校验值。
+当前发布元数据为 `APP_VERSION=0.0.3`、`SCHEMA_VERSION=3`、`CALCULATION_VERSION=v2-simple-energy-kj-1`。v0.0.3 不增加 schema 世代，也不改变派生计算版本；CAL-12 等历史说明继续保留其原始版本语境。
 
 ## 下载与首次启动
 
-1. 在 v0.0.2 Release（或后续实际发布版本）的 Assets 中下载对应 Windows x64 ZIP；`Source code (zip)` 不是打包应用。旧版 v0.0.1 不包含每日营养卡片。
+1. 在 v0.0.3 Release（或后续实际发布版本）的 Assets 中下载对应 Windows x64 ZIP；`Source code (zip)` 不是打包应用。旧版 v0.0.1 不包含每日营养卡片。
 2. 解压全部内容，保留 `CalorieK` 文件夹的完整结构，包括 `CalorieK.exe`、`_internal` 及其他随包文件。不要在 ZIP 内直接运行，也不要将 EXE 单独拖出。
 3. 双击 `CalorieK.exe`，按向导填写个人资料和当前实际体重。之后从首页记录饮食、运动和称重。
 4. 在“设置与数据”中选择 kJ 或 kcal 并保存。新用户、从旧库升级的用户默认使用 kJ；切换只改变显示/输入单位。
@@ -82,4 +82,4 @@ v0.0.2 已完成发布前独立验证并发布，是 CAL-15 时点的最新已�
 3. 实现审核和 Windows 独立验证通过后，才进入目标版本专用发布关卡下明确授权的构建/打包；不是每次源码修改都要发布。
 4. 发布包必须包含完整 one-folder 程序目录；验证最终 Windows ZIP，再按授权发布，并重新下载实际 Release 资产进行 smoke。只有这些步骤完成才算发布完成。
 
-上述流程面向未来版本，不否定已完成的 v0.0.2 发布。审核 handoff 默认不带运行数据和历史验证结果；可用 `withresults`、经隐私确认的 `withdata`，或两者任意顺序组合。它不是用户可运行的 Windows Release ZIP。完整命令、排除规则、源码运行和构建入口见 [README](../README.md)。
+上述流程继续适用于 v0.0.3 之后的版本；v0.0.3 由其专用发布验证 issue 把关。审核 handoff 默认不带运行数据和历史验证结果；可用 `withresults`、经隐私确认的 `withdata`，或两者任意顺序组合。它不是用户可运行的 Windows Release ZIP。完整命令、排除规则、源码运行和构建入口见 [README](../README.md)。

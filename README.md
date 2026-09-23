@@ -1,6 +1,6 @@
-# CalorieK（已发布基线 v0.0.2 / v0.0.3 开发中）
+# CalorieK v0.0.3
 
-CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股票日 K 线的视觉逻辑记录实际体重，并把摄入、基础/日常消耗与额外运动消耗用于当日预测和个人能量模型校准。**v0.0.2 已完成发布前独立验证并发布，是 CAL-15 时点的最新已发布基线；当前开发里程碑为 v0.0.3，尚未发布。** 应用元数据仍为 `0.0.2`，schema 为 `3`；开发里程碑不触发版本号自动变更。
+CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股票日 K 线的视觉逻辑记录实际体重，并把摄入、基础/日常消耗与额外运动消耗用于当日预测和个人能量模型校准。**v0.0.3 为当前 Windows 发布版本。** 应用元数据为 `0.0.3`，schema 为 `3`，计算版本仍为 `v2-simple-energy-kj-1`；应用版本、schema 与计算版本继续独立演进。
 
 本文同时说明当前仓库源码；标注 CAL-12 等后续开发项的内容不代表既有 Release 资产已自动更新。应用、schema 和计算版本相互独立，源码修改不等于发布。
 
@@ -8,7 +8,7 @@ CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股�
 
 ## Windows 用户：下载与运行
 
-1. 打开 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases)，选择已发布 v0.0.2 的 Windows x64 ZIP；后续版本以实际发布说明和资产为准。旧版 v0.0.1 不包含每日营养功能。
+1. 打开 [GitHub Releases](https://github.com/AtticusPhu/CalorieK/releases)，选择 v0.0.3 的 Windows x64 ZIP；后续版本以实际发布说明和资产为准。旧版 v0.0.1 不包含每日营养功能。
 2. **解压整个 ZIP** 到可访问的文件夹；不要直接在压缩包内启动，也不要只复制 EXE。
 3. 打开解压后的 `CalorieK` 文件夹，运行 `CalorieK.exe`；保留同级 `_internal` 等依赖目录。
 
@@ -39,7 +39,7 @@ CalorieK 是一个面向 Windows 10/11 x64 的本地离线桌面程序，用股�
 
 | 标识 | 当前值 | 含义 |
 | --- | --- | --- |
-| `APP_VERSION` | `0.0.2` | 已发布基线的应用标识，当前开发分支暂沿用；窗口标题、Qt 应用元数据、备份清单和 JSON 导出共用 |
+| `APP_VERSION` | `0.0.3` | 当前公开应用版本；窗口标题、Qt 应用元数据、备份清单和 JSON 导出共用 |
 | `SCHEMA_VERSION` | `3` | v2 上增量添加可空营养字段 |
 | `CALCULATION_VERSION` | `v2-simple-energy-kj-1` | kJ / schema-v2 世代的派生计算结果标识，不随文档或显示调整而改变 |
 

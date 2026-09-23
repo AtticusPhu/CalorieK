@@ -7,7 +7,7 @@ of energy/weight and must not invalidate already calculated rows.
 """
 
 APP_NAME = "CalorieK"
-APP_VERSION = "0.0.2"
+APP_VERSION = "0.0.3"
 APP_DISPLAY_NAME = f"{APP_NAME} v{APP_VERSION} · 体重热量 K 线"
 CALCULATION_VERSION = "v2-simple-energy-kj-1"
 SCHEMA_VERSION = 3

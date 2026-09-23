@@ -348,7 +348,7 @@ class Cal12NutritionRepairTests(unittest.TestCase):
         before = self.other_tables()
         self.db.initialize()
         self.assertEqual(self.other_tables(), before)
-        self.assertEqual((APP_VERSION, SCHEMA_VERSION, CALCULATION_VERSION), ("0.0.2", 3, "v2-simple-energy-kj-1"))
+        self.assertEqual((APP_VERSION, SCHEMA_VERSION, CALCULATION_VERSION), ("0.0.3", 3, "v2-simple-energy-kj-1"))
 
     def test_restoring_original_raw_snapshot_can_legitimately_trigger_repair_again(self):
         event_id = self.event()
