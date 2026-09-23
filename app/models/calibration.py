@@ -224,22 +224,40 @@ class GridSearchCalibrationEngine:
         if not any(abs(value) < 1e-12 for value in candidates):
             candidates.append(0.0)
 
+        # Cumulative uncalibrated energy depends only on the historical days,
+        # never on the candidate δ.  Build each observation input once while
+        # preserving the original chronological floating-point summation order.
+        prepared_observations: list[tuple[float, int, float]] = []
+        cumulative_energy = 0.0
+        observation_targets = {
+            observation.day: (observation, target_weight)
+            for observation, target_weight in zip(observations[1:], trend_weights[1:])
+        }
+        cursor = first_observation.day + timedelta(days=1)
+        while cursor <= last_observation.day:
+            daily = by_date.get(cursor)
+            if daily is not None:
+                cumulative_energy += daily.uncalibrated_balance_kj
+            target = observation_targets.get(cursor)
+            if target is not None:
+                observation, target_weight = target
+                prepared_observations.append(
+                    (
+                        target_weight,
+                        (observation.day - first_observation.day).days,
+                        cumulative_energy,
+                    )
+                )
+            cursor += timedelta(days=1)
+
         best_delta = 0.0
         best_rmse = float("inf")
         for delta in candidates:
             squared_errors: list[float] = []
-            for observation, target_weight in zip(observations[1:], trend_weights[1:]):
-                elapsed_days = (observation.day - first_observation.day).days
-                cumulative_energy = 0.0
-                cursor = first_observation.day + timedelta(days=1)
-                while cursor <= observation.day:
-                    daily = by_date.get(cursor)
-                    if daily is not None:
-                        cumulative_energy += daily.uncalibrated_balance_kj
-                    cursor += timedelta(days=1)
+            for target_weight, elapsed_days, observation_energy in prepared_observations:
                 # Positive δ is extra burn on every elapsed natural day.
                 predicted = anchor_weight + self.weight_model.energy_to_weight_delta(
-                    cumulative_energy - delta * elapsed_days
+                    observation_energy - delta * elapsed_days
                 )
                 squared_errors.append((target_weight - predicted) ** 2)
             rmse = sqrt(sum(squared_errors) / len(squared_errors))

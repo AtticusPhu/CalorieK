@@ -16,6 +16,8 @@ from typing import Any
 
 from app.db.database import Database
 from app.db.migrations import validate_schema
+from app.db.writer_guard import WriterLease
+from app.timestamps import now_iso
 from app.version import APP_NAME, APP_VERSION, SCHEMA_VERSION
 
 
@@ -50,7 +52,7 @@ class BackupService:
 
     @staticmethod
     def _timestamp() -> str:
-        return datetime.now().astimezone().isoformat(timespec="seconds")
+        return now_iso()
 
     @staticmethod
     def _file_timestamp() -> str:
@@ -239,6 +241,12 @@ class BackupService:
         return manifest
 
     def restore_backup(self, backup_path: str | Path) -> Path:
+        # Standalone restore tools must obey the same ownership policy as the
+        # GUI. Keep the lease through validation, safety backup and replacement.
+        with WriterLease(self.database_path):
+            return self._restore_backup(backup_path)
+
+    def _restore_backup(self, backup_path: str | Path) -> Path:
         """Validate and atomically replace the database.
 
         A backup of the current database is always created immediately before
@@ -331,23 +339,35 @@ class BackupService:
         payload: dict[str, Any] = {
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
-            "schema_version": self._read_schema_version(self.database_path),
+            "schema_version": None,  # Filled from the same snapshot as the rows.
             "exported_at": self._timestamp(),
             "tables": {},
         }
         staged_export: Path | None = None
         try:
-            with closing(sqlite3.connect(self.database_path)) as connection:
+            with closing(sqlite3.connect(
+                self.database_path.as_uri() + "?mode=ro", uri=True,
+                isolation_level=None,
+            )) as connection:
                 connection.row_factory = sqlite3.Row
+                # BEGIN is deferred/read-only, not BEGIN IMMEDIATE. The first
+                # read pins one WAL snapshot for metadata, table list and rows.
+                connection.execute("BEGIN")
+                check = connection.execute("PRAGMA quick_check").fetchone()
+                if not check or check[0] != "ok":
+                    raise BackupError("数据库未通过 SQLite 完整性校验。")
+                version = connection.execute("SELECT MAX(version) FROM schema_version").fetchone()
+                if not version or type(version[0]) is not int or version[0] < 1:
+                    raise BackupError("数据库缺少有效的整数 schema_version。")
+                payload["schema_version"] = version[0]
                 tables = connection.execute(
                     "SELECT name FROM sqlite_master "
                     "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
                 ).fetchall()
                 for table_row in tables:
                     table = str(table_row["name"])
-                    quoted = table.replace('"', '""')
-                    rows = connection.execute(f'SELECT * FROM "{quoted}"').fetchall()
-                    payload["tables"][table] = [dict(row) for row in rows]
+                    payload["tables"][table] = self._export_rows(connection, table)
+                connection.rollback()  # End read snapshot before file I/O.
             descriptor, staged_name = tempfile.mkstemp(
                 dir=destination_path.parent,
                 prefix=f".{destination_path.name}.",
@@ -366,3 +386,8 @@ class BackupService:
             if staged_export is not None:
                 staged_export.unlink(missing_ok=True)
         return destination_path
+
+    @staticmethod
+    def _export_rows(connection: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+        quoted = table.replace('"', '""')
+        return [dict(row) for row in connection.execute(f'SELECT * FROM "{quoted}"')]

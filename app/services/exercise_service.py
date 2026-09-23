@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.db.database import Database, normalize_date, normalize_datetime, now_iso, row_to_dict
+from app.timestamps import preserve_or_normalize_event_update
 
 
 def _non_negative(value: float, label: str) -> float:
@@ -91,12 +92,12 @@ class ExerciseService:
         with self.db.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT t.*, MAX(e.occurred_at) AS last_used_at
+                SELECT t.*, MAX(e.occurred_at COLLATE CALORIEK_LOCAL) AS last_used_at
                 FROM exercise_types t
                 JOIN exercise_events e ON e.exercise_type_id = t.id AND e.active = 1
                 WHERE t.active = 1
                 GROUP BY t.id
-                ORDER BY last_used_at DESC, t.id DESC LIMIT ?
+                ORDER BY last_used_at COLLATE CALORIEK_LOCAL DESC, t.id DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
@@ -160,7 +161,7 @@ class ExerciseService:
                 """
                 SELECT duration_min, active_kj FROM exercise_events
                 WHERE exercise_type_id = ? AND active = 1
-                ORDER BY occurred_at DESC, id DESC LIMIT 1
+                ORDER BY occurred_at COLLATE CALORIEK_LOCAL DESC, id DESC LIMIT 1
                 """,
                 (exercise_type_id,),
             ).fetchone()
@@ -252,7 +253,7 @@ class ExerciseService:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.db.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM exercise_events" + where + " ORDER BY occurred_at, id",
+                "SELECT * FROM exercise_events" + where + " ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 parameters,
             ).fetchall()
         return [dict(row) for row in rows]
@@ -290,10 +291,9 @@ class ExerciseService:
             active_kj if active_kj is not None else event["active_kj"],
             "active_kj",
         )
-        if occurred_at is None:
-            occurred_value, local_date = event["occurred_at"], event["local_date"]
-        else:
-            occurred_value, local_date = normalize_datetime(occurred_at)
+        occurred_value, local_date = preserve_or_normalize_event_update(
+            event["occurred_at"], event["local_date"], occurred_at,
+        )
         with self.db.transaction() as connection:
             connection.execute(
                 """

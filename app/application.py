@@ -12,17 +12,19 @@ from typing import Any, Sequence
 
 from app.color_modes import candle_palette, treemap_palette
 from app.db.database import Database
+from app.db.writer_guard import WriterLease
 from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit, format_energy, kcal_to_kj, normalize_energy_unit
 from app.nutrition import DailyNutrition, NutritionContribution, aggregate_contributions, food_contribution, legacy_food_available
 from app.paths import database_path, ensure_data_dir, save_data_dir_preference
 from app.services.backup_service import BackupService
-from app.services.daily_metrics_service import DailyMetricsService, parse_local_datetime
+from app.services.daily_metrics_service import DailyMetricsService
 from app.services.exercise_service import ExerciseService
 from app.services.food_service import FoodService
 from app.services.nutrition_service import NutritionService
 from app.services.profile_service import ProfileService
 from app.services.recipe_service import RecipeService
 from app.services.treemap_service import TreemapDataService
+from app.timestamps import parse_datetime, parse_local_datetime
 from app.ui.context import (
     CandleDTO,
     DashboardDTO,
@@ -64,9 +66,16 @@ class ApplicationContext:
     """Concrete implementation of the presentation-layer ``UIContext``."""
 
     def __init__(self, data_dir: str | Path | None = None) -> None:
-        self._bind_data_dir(ensure_data_dir(data_dir))
-        if self.database.initial_schema_version in (0, 1):
-            self._seed_exercise_shortcuts()
+        try:
+            self._bind_data_dir(ensure_data_dir(data_dir))
+            if self.database.initial_schema_version in (0, 1):
+                self._seed_exercise_shortcuts()
+        except BaseException:
+            # Do not let an initialization exception's retained traceback keep
+            # a failed startup's writer lease alive indefinitely.
+            if hasattr(self, "database"):
+                self.database.close()
+            raise
 
     def _bind_data_dir(self, data_dir: str | Path) -> None:
         self.data_dir = ensure_data_dir(data_dir)
@@ -231,11 +240,11 @@ class ApplicationContext:
             with self.database.connection() as connection:
                 rows = connection.execute(
                     """
-                    SELECT source_type, source_id, MAX(occurred_at) AS last_used
+                    SELECT source_type, source_id, MAX(occurred_at COLLATE CALORIEK_LOCAL) AS last_used
                     FROM intake_events
                     WHERE active = 1 AND source_id IS NOT NULL
                     GROUP BY source_type, source_id
-                    ORDER BY last_used DESC LIMIT 20
+                    ORDER BY last_used COLLATE CALORIEK_LOCAL DESC, source_type, source_id DESC LIMIT 20
                     """
                 ).fetchall()
             result: list[IntakeSourceDTO] = []
@@ -332,19 +341,19 @@ class ApplicationContext:
         records = []
         for row in self.foods.list_intake_events(local_date=day):
             records.append(DailyRecordDTO(
-                "intake", int(row["id"]), datetime.fromisoformat(row["occurred_at"]),
+                "intake", int(row["id"]), parse_datetime(row["occurred_at"]),
                 row["name_snapshot"], note=row["note"] or "", amount=float(row["amount"]),
                 unit=row["unit"], meal_type=row["meal_type"], energy_kj=float(row["kj_snapshot"]),
             ))
         for row in self.exercises.list_exercise_events(local_date=day):
             records.append(DailyRecordDTO(
-                "exercise", int(row["id"]), datetime.fromisoformat(row["occurred_at"]),
+                "exercise", int(row["id"]), parse_datetime(row["occurred_at"]),
                 row["name_snapshot"], note=row["note"] or "", duration_min=float(row["duration_min"]),
                 energy_kj=float(row["active_kj"]), exercise_type_id=row["exercise_type_id"],
             ))
         for row in WeightService(self.database).list_measurements(local_date=day):
             records.append(DailyRecordDTO(
-                "weight", int(row["id"]), datetime.fromisoformat(row["occurred_at"]),
+                "weight", int(row["id"]), parse_datetime(row["occurred_at"]),
                 "体重", note=row["note"] or "", amount=float(row["weight_kg"]), unit="kg",
             ))
         # Match existing local-calendar calculations; retain original offsets in DTOs.
@@ -762,6 +771,15 @@ class ApplicationContext:
     def _relocate_data_with_settings(
         self, destination: Path, settings: SettingsDraft
     ) -> None:
+        # Reserve the actual destination *before* checking existence or staging.
+        # The source Database retains its lease throughout this operation.
+        self.database.check_access()
+        with WriterLease(destination / self.database.path.name):
+            self._relocate_owned_data_with_settings(destination, settings)
+
+    def _relocate_owned_data_with_settings(
+        self, destination: Path, settings: SettingsDraft
+    ) -> None:
         """Prepare a fully updated copy, then atomically switch directories.
 
         The original database is intentionally retained as a recovery copy.
@@ -778,6 +796,7 @@ class ApplicationContext:
             )
         self.backups.create_backup(prefix="before_data_directory_change")
         stage = destination / ".caloriek-move.sqlite3"
+        prepared = None
         try:
             stage.unlink(missing_ok=True)
             # sqlite3.Connection.__exit__ only commits or rolls back; it does not
@@ -802,6 +821,8 @@ class ApplicationContext:
             prepared._seed_exercise_shortcuts()
             save_data_dir_preference(destination)
         except BaseException:
+            if prepared is not None:
+                prepared.database.close()
             # Cleanup must never hide the original relocation error (for example,
             # a transient antivirus/file-indexer lock on Windows).
             for artifact in (

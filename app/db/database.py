@@ -16,15 +16,11 @@ from typing import Any
 from app.db.migrations import execute_schema, migrate_v1_to_v2, migrate_v2_to_v3, schema_sql_for_version, validate_schema
 from app.db.migrations.snapshot import create_pre_cal12_nutrition_snapshot, create_pre_migration_snapshot
 from app.db.nutrition_repair import has_cal12_nutrition_repair_candidates, repair_cal12_nutrition
+from app.db.writer_guard import WriterLease
+from app.timestamps import compare_local_timestamps, normalize_datetime, now_iso, parse_datetime
 from app.version import SCHEMA_VERSION
 
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
-
-
-def now_iso() -> str:
-    """Return a sortable local timestamp including the UTC offset."""
-
-    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def normalize_date(value: date | datetime | str) -> str:
@@ -42,30 +38,10 @@ def normalize_date(value: date | datetime | str) -> str:
         raise ValueError("date must not be empty")
     try:
         if "T" in text or " " in text:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+            return parse_datetime(text).date().isoformat()
         return date.fromisoformat(text).isoformat()
     except ValueError as exc:
         raise ValueError(f"invalid ISO date: {value!r}") from exc
-
-
-def normalize_datetime(value: datetime | date | str | None = None) -> tuple[str, str]:
-    """Return a complete ISO datetime and its local calendar date."""
-
-    if value is None:
-        moment = datetime.now().astimezone()
-    elif isinstance(value, datetime):
-        moment = value
-    elif isinstance(value, date):
-        moment = datetime.combine(value, datetime.min.time())
-    else:
-        text = str(value).strip()
-        if not text:
-            raise ValueError("datetime must not be empty")
-        try:
-            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError(f"invalid ISO datetime: {value!r}") from exc
-    return moment.isoformat(timespec="seconds"), moment.date().isoformat()
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -77,6 +53,9 @@ class Database:
 
     def __init__(self, path: str | Path, *, timeout: float = 10.0) -> None:
         self.path = Path(path).expanduser().resolve()
+        # Hold across service reads and later transactions, not just writes.
+        # Multiple objects on the owner thread share the same OS ownership.
+        self._writer_lease = WriterLease(self.path)
         self.timeout = timeout
         self.last_migration_snapshot: Path | None = None
         self.last_migration_from_version: int | None = None
@@ -91,6 +70,7 @@ class Database:
         :meth:`connection` or :meth:`transaction` so it is always closed.
         """
 
+        self.check_access()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(
             self.path,
@@ -98,9 +78,18 @@ class Database:
             isolation_level=None,
         )
         connection.row_factory = sqlite3.Row
+        connection.create_collation("CALORIEK_LOCAL", compare_local_timestamps)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {int(self.timeout * 1000)}")
         return connection
+
+    def close(self) -> None:
+        """Release ownership after all connections/operations have finished."""
+        self._writer_lease.close()
+
+    def check_access(self) -> None:
+        """Check ownership before workflows that also use raw SQLite handles."""
+        self._writer_lease.check()
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:

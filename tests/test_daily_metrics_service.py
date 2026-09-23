@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -35,6 +36,54 @@ class DailyMetricsIntegrationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+
+    def test_recalculate_uses_bounded_context_instead_of_per_day_fact_queries(self) -> None:
+        # The historical rebuild must use the bulk calculation context. The
+        # standalone single-day helper remains available for other call paths,
+        # but invoking it from the rebuild would reintroduce N x rolling-window
+        # database queries.
+        with patch.object(
+            self.metrics,
+            "_daily_facts",
+            side_effect=AssertionError("recalculate must not query facts day-by-day"),
+        ):
+            rebuilt = self.metrics.rebuild_all(self.today)
+
+        self.assertEqual(rebuilt, (self.today - self.first_day).days + 1)
+        self.assertEqual(
+            len(self.metrics.list_metrics(start_day=self.first_day, end_day=self.today)),
+            rebuilt,
+        )
+
+    def test_bulk_context_facts_match_standalone_daily_facts(self) -> None:
+        event_day = self.first_day + timedelta(days=2)
+        self.foods.record_custom_intake(
+            name="上下文等价测试",
+            amount=1,
+            unit="份",
+            kj=kcal_to_kj(750),
+            occurred_at=datetime.combine(event_day, time(12, 30)),
+        )
+        ProfileService(self.db).update_profile(
+            effective_from=event_day,
+            height_cm=176,
+        )
+        WeightService(self.db).record_weight(
+            69.8,
+            occurred_at=datetime.combine(event_day, time(20, 0)),
+        )
+
+        first_actual = self.metrics._first_actual_date()
+        self.assertIsNotNone(first_actual)
+        assert first_actual is not None
+        context = self.metrics._build_calculation_context(
+            first_actual, self.today, first_actual=first_actual
+        )
+
+        for day_value in (self.first_day, event_day, self.today):
+            with self.subTest(day=day_value):
+                self.assertEqual(context.facts(day_value), self.metrics._daily_facts(day_value))
 
     def test_invalid_stored_energy_equivalence_uses_default(self) -> None:
         for value in ("inf", "-inf", "nan", "0", "-1", "invalid"):

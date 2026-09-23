@@ -30,14 +30,8 @@ from app.models.ohlc import (
 )
 from app.models.weight_model import SimpleEnergyWeightModel
 from app.services.profile_service import ProfileService
+from app.timestamps import parse_local_datetime
 from app.version import CALCULATION_VERSION
-
-
-def parse_local_datetime(value: str | datetime) -> datetime:
-    """Interpret stored timestamps by their recorded local wall-clock value."""
-
-    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
-    return parsed.replace(tzinfo=None)
 
 
 def iter_days(start: date, end: date) -> Iterable[date]:
@@ -55,6 +49,33 @@ class DailyFacts:
     baseline_kj: float
     measurements: tuple[WeightMeasurement, ...]
     events: tuple[EnergyEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CalculationContext:
+    """Bounded raw-fact snapshot reused by one historical calculation.
+
+    The context is intentionally private: it is an orchestration optimization,
+    not a new calculation/model interface.  Weight/calibration models remain
+    replaceable and continue to receive the same scalar inputs as before.
+    """
+
+    first_actual: date
+    start_day: date
+    end_day: date
+    facts_by_day: dict[date, DailyFacts]
+    calibration_days_by_day: dict[date, CalibrationDay]
+
+    def facts(self, day: date) -> DailyFacts:
+        try:
+            return self.facts_by_day[day]
+        except KeyError as exc:
+            raise ValueError(f"{day.isoformat()} is outside calculation context") from exc
+
+    def calibration_days(self, start: date, end: date) -> list[CalibrationDay]:
+        if start < self.start_day or end > self.end_day or start > end:
+            raise ValueError("calibration window is outside calculation context")
+        return [self.calibration_days_by_day[day] for day in iter_days(start, end)]
 
 
 class DailyMetricsService:
@@ -108,18 +129,17 @@ class DailyMetricsService:
         if on_or_before is not None:
             clauses.append("local_date <= ?")
             parameters.append(on_or_before.isoformat())
+        if as_of is not None:
+            clauses.append("occurred_at COLLATE CALORIEK_LOCAL <= ?")
+            parameters.append(parse_local_datetime(as_of).isoformat())
         with self.db.connection() as connection:
-            rows = connection.execute(
+            row = connection.execute(
                 "SELECT * FROM weight_measurements WHERE "
                 + " AND ".join(clauses)
-                + " ORDER BY local_date DESC, occurred_at DESC, id DESC",
+                + " ORDER BY local_date DESC, occurred_at COLLATE CALORIEK_LOCAL DESC, id DESC LIMIT 1",
                 parameters,
-            ).fetchall()
-        for row in rows:
-            item = dict(row)
-            if as_of is None or parse_local_datetime(item["occurred_at"]) <= as_of:
-                return item
-        return None
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def _revision(self, day: date) -> dict[str, Any] | None:
         return self.profile_service.get_revision_for_date(day)
@@ -172,6 +192,202 @@ class DailyMetricsService:
             start, start + timedelta(days=1), reference_weight_kg
         )
 
+    def _day_baseline_from_revision(
+        self, day: date, reference_weight_kg: float, revision: dict[str, Any]
+    ) -> float:
+        """Calculate one natural day without re-querying its profile revision."""
+
+        rmr = self.metabolism.calculate_rmr(
+            sex=revision["gender"],
+            weight_kg=reference_weight_kg,
+            height_cm=float(revision["height_cm"]),
+            age_years=calculate_age(date.fromisoformat(revision["birth_date"]), day),
+        )
+        start = datetime.combine(day, time.min)
+        return self.metabolism.calculate_baseline_burn(
+            rmr_kj_day=rmr,
+            start_at=start,
+            end_at=start + timedelta(days=1),
+            wake_time=time.fromisoformat(revision["wake_time"]),
+            sleep_time=time.fromisoformat(revision["sleep_time"]),
+            awake_multiplier=float(revision["awake_multiplier"]),
+            sleep_multiplier=float(revision["sleep_multiplier"]),
+        ).total_kj
+
+    def _build_calculation_context(
+        self,
+        start_day: date,
+        end_day: date,
+        *,
+        first_actual: date,
+    ) -> _CalculationContext:
+        """Bulk-load a bounded calculation range and materialize daily facts once.
+
+        ``start_day`` includes any calibration lookback required by the caller.
+        All reads use one connection and retain the existing timestamp collation,
+        representative-weight and effective-profile rules.
+        """
+
+        if start_day < first_actual:
+            start_day = first_actual
+        if start_day > end_day:
+            raise ValueError("calculation context start cannot be after end")
+
+        with self.db.connection() as connection:
+            intake_rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM intake_events WHERE active = 1 "
+                    "AND local_date BETWEEN ? AND ? "
+                    "ORDER BY local_date, occurred_at COLLATE CALORIEK_LOCAL, id",
+                    (start_day.isoformat(), end_day.isoformat()),
+                ).fetchall()
+            ]
+            exercise_rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM exercise_events WHERE active = 1 "
+                    "AND local_date BETWEEN ? AND ? "
+                    "ORDER BY local_date, occurred_at COLLATE CALORIEK_LOCAL, id",
+                    (start_day.isoformat(), end_day.isoformat()),
+                ).fetchall()
+            ]
+            weight_rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM weight_measurements WHERE active = 1 "
+                    "AND local_date BETWEEN ? AND ? "
+                    "ORDER BY local_date, occurred_at COLLATE CALORIEK_LOCAL, id",
+                    (start_day.isoformat(), end_day.isoformat()),
+                ).fetchall()
+            ]
+            prior_reference_row = connection.execute(
+                "SELECT * FROM weight_measurements WHERE active = 1 AND local_date < ? "
+                "ORDER BY local_date DESC, occurred_at COLLATE CALORIEK_LOCAL DESC, "
+                "id DESC LIMIT 1",
+                (start_day.isoformat(),),
+            ).fetchone()
+            prior_reference = (
+                dict(prior_reference_row) if prior_reference_row is not None else None
+            )
+            revisions = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM profile_revisions WHERE profile_id = 1 "
+                    "AND effective_from <= ? ORDER BY effective_from, id",
+                    (end_day.isoformat(),),
+                ).fetchall()
+            ]
+
+        def group_by_day(rows: list[dict[str, Any]]) -> dict[date, list[dict[str, Any]]]:
+            grouped: dict[date, list[dict[str, Any]]] = {}
+            for row in rows:
+                grouped.setdefault(date.fromisoformat(row["local_date"]), []).append(row)
+            return grouped
+
+        intake_by_day = group_by_day(intake_rows)
+        exercise_by_day = group_by_day(exercise_rows)
+        weights_by_day = group_by_day(weight_rows)
+
+        facts_by_day: dict[date, DailyFacts] = {}
+        calibration_days_by_day: dict[date, CalibrationDay] = {}
+        reference = prior_reference
+        revision_index = -1
+        current_revision: dict[str, Any] | None = None
+
+        for day_value in iter_days(start_day, end_day):
+            while (
+                revision_index + 1 < len(revisions)
+                and date.fromisoformat(revisions[revision_index + 1]["effective_from"])
+                <= day_value
+            ):
+                revision_index += 1
+                current_revision = revisions[revision_index]
+            if current_revision is None:
+                raise LookupError(f"{day_value.isoformat()} 没有可用的用户资料版本")
+
+            day_weights = weights_by_day.get(day_value, [])
+            if day_weights:
+                # The same final-in-natural-day row used by _latest_actual_row and
+                # fit_calibration's former ordered dict comprehension wins.
+                reference = day_weights[-1]
+            if reference is None:
+                raise MissingWeightAnchorError(
+                    "no actual weight exists on or before day"
+                )
+
+            day_intakes = intake_by_day.get(day_value, [])
+            day_exercises = exercise_by_day.get(day_value, [])
+            intake_kj = sum(float(row["kj_snapshot"]) for row in day_intakes)
+            exercise_kj = sum(float(row["active_kj"]) for row in day_exercises)
+            events = tuple(
+                [
+                    EnergyEvent(
+                        occurred_at=parse_local_datetime(row["occurred_at"]),
+                        kj=float(row["kj_snapshot"]),
+                        event_type=EnergyEventType.INTAKE,
+                        name=str(row["name_snapshot"]),
+                    )
+                    for row in day_intakes
+                ]
+                + [
+                    EnergyEvent(
+                        occurred_at=parse_local_datetime(row["occurred_at"]),
+                        kj=float(row["active_kj"]),
+                        event_type=EnergyEventType.EXERCISE,
+                        name=str(row["name_snapshot"]),
+                    )
+                    for row in day_exercises
+                ]
+            )
+            measurements = tuple(
+                WeightMeasurement(
+                    occurred_at=parse_local_datetime(row["occurred_at"]),
+                    weight_kg=float(row["weight_kg"]),
+                    anchor=str(row["anchor"]),
+                    note=str(row["note"] or ""),
+                )
+                for row in day_weights
+            )
+            facts = DailyFacts(
+                day=day_value,
+                intake_kj=intake_kj,
+                exercise_kj=exercise_kj,
+                baseline_kj=self._day_baseline_from_revision(
+                    day_value, float(reference["weight_kg"]), current_revision
+                ),
+                measurements=measurements,
+                events=events,
+            )
+            facts_by_day[day_value] = facts
+            calibration_days_by_day[day_value] = CalibrationDay(
+                day=day_value,
+                intake_kj=facts.intake_kj,
+                baseline_kj=facts.baseline_kj,
+                exercise_kj=facts.exercise_kj,
+                actual_weight_kg=(
+                    float(day_weights[-1]["weight_kg"]) if day_weights else None
+                ),
+            )
+
+        return _CalculationContext(
+            first_actual=first_actual,
+            start_day=start_day,
+            end_day=end_day,
+            facts_by_day=facts_by_day,
+            calibration_days_by_day=calibration_days_by_day,
+        )
+
+    def _fit_calibration_from_context(
+        self, end_day: date, context: _CalculationContext
+    ) -> CalibrationResult:
+        start = max(context.first_actual, end_day - timedelta(days=29))
+        return self.calibration.fit(
+            context.calibration_days(start, end_day),
+            start_date=start,
+            end_date=end_day,
+        )
+
     def _daily_facts(self, day: date) -> DailyFacts:
         reference = self._latest_actual_row(on_or_before=day)
         if reference is None:
@@ -179,17 +395,17 @@ class DailyMetricsService:
         with self.db.connection() as connection:
             intake_rows = connection.execute(
                 "SELECT * FROM intake_events WHERE local_date = ? AND active = 1 "
-                "ORDER BY occurred_at, id",
+                "ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 (day.isoformat(),),
             ).fetchall()
             exercise_rows = connection.execute(
                 "SELECT * FROM exercise_events WHERE local_date = ? AND active = 1 "
-                "ORDER BY occurred_at, id",
+                "ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 (day.isoformat(),),
             ).fetchall()
             weight_rows = connection.execute(
                 "SELECT * FROM weight_measurements WHERE local_date = ? AND active = 1 "
-                "ORDER BY occurred_at, id",
+                "ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 (day.isoformat(),),
             ).fetchall()
 
@@ -240,35 +456,10 @@ class DailyMetricsService:
         if first_actual is None:
             return self.calibration.fit([], end_date=end_day)
         start = max(first_actual, end_day - timedelta(days=29))
-        calibration_days: list[CalibrationDay] = []
-        with self.db.connection() as connection:
-            weight_by_date = {
-                row["local_date"]: float(row["weight_kg"])
-                for row in connection.execute(
-                    "SELECT w.local_date, w.weight_kg FROM weight_measurements w "
-                    "JOIN (SELECT local_date, MAX(occurred_at) AS occurred_at "
-                    "      FROM weight_measurements WHERE active = 1 "
-                    "      GROUP BY local_date) last "
-                    "ON last.local_date = w.local_date AND last.occurred_at = w.occurred_at "
-                    "WHERE w.active = 1 AND w.local_date BETWEEN ? AND ? "
-                    "ORDER BY w.local_date, w.id",
-                    (start.isoformat(), end_day.isoformat()),
-                ).fetchall()
-            }
-        for day_value in iter_days(start, end_day):
-            facts = self._daily_facts(day_value)
-            calibration_days.append(
-                CalibrationDay(
-                    day=day_value,
-                    intake_kj=facts.intake_kj,
-                    baseline_kj=facts.baseline_kj,
-                    exercise_kj=facts.exercise_kj,
-                    actual_weight_kg=weight_by_date.get(day_value.isoformat()),
-                )
-            )
-        result = self.calibration.fit(
-            calibration_days, start_date=start, end_date=end_day
+        context = self._build_calculation_context(
+            start, end_day, first_actual=first_actual
         )
+        result = self._fit_calibration_from_context(end_day, context)
         if persist:
             with self.db.transaction() as connection:
                 connection.execute(
@@ -364,11 +555,19 @@ class DailyMetricsService:
             start = first_actual
         previous_close = float(previous_row[0]) if previous_row is not None else None
 
+        # One bounded context covers the rebuild range plus the 29 preceding
+        # natural days needed by the rolling calibration window.  This avoids
+        # re-querying the same raw facts/profile revisions for every candle.
+        context_start = max(first_actual, start - timedelta(days=29))
+        context = self._build_calculation_context(
+            context_start, end, first_actual=first_actual
+        )
+
         rows: list[dict[str, Any]] = []
         calibration_results: list[CalibrationResult] = []
         for current_day in iter_days(start, end):
-            facts = self._daily_facts(current_day)
-            calibration = self.fit_calibration(current_day)
+            facts = context.facts(current_day)
+            calibration = self._fit_calibration_from_context(current_day, context)
             calibration_results.append(calibration)
             result = self.ohlc.generate_day(
                 OHLCInput(
@@ -534,7 +733,7 @@ class DailyMetricsService:
     def calculate_today_projection(
         self, as_of: datetime | None = None
     ) -> DailyProjectionResult | None:
-        current = (as_of or datetime.now()).replace(tzinfo=None)
+        current = parse_local_datetime(as_of or datetime.now())
         self.ensure_calculated(current.date())
         actual = self._latest_actual_row(as_of=current)
         if actual is None:
@@ -543,12 +742,12 @@ class DailyMetricsService:
         with self.db.connection() as connection:
             intake_rows = connection.execute(
                 "SELECT * FROM intake_events WHERE active = 1 "
-                "AND local_date BETWEEN ? AND ? ORDER BY occurred_at, id",
+                "AND local_date BETWEEN ? AND ? ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 (anchor_at.date().isoformat(), current.date().isoformat()),
             ).fetchall()
             exercise_rows = connection.execute(
                 "SELECT * FROM exercise_events WHERE active = 1 "
-                "AND local_date BETWEEN ? AND ? ORDER BY occurred_at, id",
+                "AND local_date BETWEEN ? AND ? ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 (anchor_at.date().isoformat(), current.date().isoformat()),
             ).fetchall()
             cache = connection.execute(

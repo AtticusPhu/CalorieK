@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from math import fsum, isfinite
 from typing import Iterable, Mapping, Any
+
+from app.timestamps import parse_datetime
 
 
 NUTRIENT_NAMES = ("protein_g", "fiber_g", "fat_g", "carbs_g")
@@ -62,8 +64,8 @@ def legacy_food_available(food: Mapping[str, Any]) -> bool:
     if food.get("is_builtin") and food.get("builtin_key"):
         return True
     try:
-        created = datetime.fromisoformat(str(food.get("created_at")))
-        applied = datetime.fromisoformat(str(food.get("v3_applied_at")))
+        created = parse_datetime(str(food.get("created_at")))
+        applied = parse_datetime(str(food.get("v3_applied_at")))
         # Mixed clock domains and equal (second-resolution) timestamps cannot
         # prove pre-migration origin. Do not guess that DEFAULT 0 is known.
         return created < applied

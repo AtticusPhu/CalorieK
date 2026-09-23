@@ -11,6 +11,8 @@ import math
 from datetime import date, datetime
 from typing import Any
 
+from app.timestamps import parse_local_datetime, preserve_or_normalize_event_update
+
 from app.db.database import (
     Database,
     normalize_date,
@@ -60,7 +62,7 @@ class WeightService:
         if normalized != "AUTO":
             return normalized
         occurred_value, _ = normalize_datetime(occurred_at)
-        moment = datetime.fromisoformat(occurred_value)
+        moment = parse_local_datetime(occurred_value)
         return "OPEN" if moment.hour < 12 else "CLOSE"
 
     def record_weight(
@@ -163,7 +165,7 @@ class WeightService:
         sql = (
             "SELECT * FROM weight_measurements"
             + where
-            + f" ORDER BY occurred_at {direction}, id {direction}"
+            + f" ORDER BY occurred_at COLLATE CALORIEK_LOCAL {direction}, id {direction}"
         )
         if limit is not None:
             sql += " LIMIT ?"
@@ -193,9 +195,10 @@ class WeightService:
                 clauses.append("local_date <= ?")
                 parameters.append(normalize_date(as_of))
             else:
-                occurred_value, _ = normalize_datetime(as_of)
-                clauses.append("occurred_at <= ?")
-                parameters.append(occurred_value)
+                clauses.append("occurred_at COLLATE CALORIEK_LOCAL <= ?")
+                # Comparisons retain historical fractional seconds even though
+                # new fact writes intentionally keep existing second precision.
+                parameters.append(parse_local_datetime(as_of).isoformat())
         if not include_inactive:
             clauses.append("active = 1")
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -203,7 +206,7 @@ class WeightService:
             row = connection.execute(
                 "SELECT * FROM weight_measurements"
                 + where
-                + " ORDER BY occurred_at DESC, id DESC LIMIT 1",
+                + " ORDER BY occurred_at COLLATE CALORIEK_LOCAL DESC, id DESC LIMIT 1",
                 parameters,
             ).fetchone()
         return row_to_dict(row)
@@ -234,11 +237,9 @@ class WeightService:
         anchor_value = (
             str(current["anchor"]) if anchor is None else normalize_anchor(anchor)
         )
-        if occurred_at is None:
-            occurred_value = str(current["occurred_at"])
-            local_date = str(current["local_date"])
-        else:
-            occurred_value, local_date = normalize_datetime(occurred_at)
+        occurred_value, local_date = preserve_or_normalize_event_update(
+            str(current["occurred_at"]), str(current["local_date"]), occurred_at,
+        )
         note_value = note if update_note or note is not None else current["note"]
 
         with self.db.transaction() as connection:

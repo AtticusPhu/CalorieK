@@ -36,7 +36,8 @@ class ServiceTests(unittest.TestCase):
             weight = connection.execute(
                 "SELECT * FROM weight_measurements WHERE id = ?", (measurement_id,)
             ).fetchone()
-        self.assertEqual(weight["occurred_at"], "2026-08-10T07:30:00+08:00")
+        # New event writes use canonical recorded-local clocks (CAL-16).
+        self.assertEqual(weight["occurred_at"], "2026-08-10T07:30:00")
         self.assertEqual(weight["local_date"], "2026-08-10")
         self.assertEqual(weight["weight_kg"], 70.0)
 

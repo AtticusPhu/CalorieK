@@ -54,7 +54,7 @@ class TreemapDataService:
                 dict(row)
                 for row in connection.execute(
                     "SELECT * FROM intake_events "
-                    "WHERE local_date = ? AND active = 1 ORDER BY occurred_at, id",
+                    "WHERE local_date = ? AND active = 1 ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                     (day,),
                 ).fetchall()
             ]
@@ -62,7 +62,7 @@ class TreemapDataService:
                 dict(row)
                 for row in connection.execute(
                     "SELECT * FROM exercise_events "
-                    "WHERE local_date = ? AND active = 1 ORDER BY occurred_at, id",
+                    "WHERE local_date = ? AND active = 1 ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                     (day,),
                 ).fetchall()
             ]

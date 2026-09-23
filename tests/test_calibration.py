@@ -45,6 +45,64 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(trend.smooth([70, 69, 71]), (70, 69.75, 70.0625))
         self.assertEqual(trend.model_version, "ewma-observation-span-7-v1")
 
+
+    def test_grid_search_precomputes_observation_energy_once(self) -> None:
+        class CountingDay:
+            accesses = 0
+
+            def __init__(self, day, actual_weight_kg=None):
+                self.day = day
+                self.actual_weight_kg = actual_weight_kg
+
+            @property
+            def uncalibrated_balance_kj(self):
+                type(self).accesses += 1
+                return 0.0
+
+        start = date(2026, 7, 1)
+        days = [
+            CountingDay(
+                start + timedelta(days=index),
+                actual_weight_kg=70.0 if index in (0, 29) else None,
+            )
+            for index in range(30)
+        ]
+        engine = GridSearchCalibrationEngine(
+            minimum_kj_day=-8.368, maximum_kj_day=8.368, step_kj_day=4.184
+        )
+
+        result = engine.fit(days)
+
+        self.assertTrue(result.fitted)
+        # Day energy is independent of candidate δ. Each natural day after the
+        # anchor is therefore read once, not once per grid candidate.
+        self.assertEqual(CountingDay.accesses, 29)
+
+    def test_grid_search_keeps_weight_model_replaceable(self) -> None:
+        class ReplacementWeightModel:
+            def energy_to_weight_delta(self, energy_kj):
+                return float(energy_kj) / 30000.0
+
+            def project_weight(
+                self, start_weight_kg, *, intake_kj=0.0, baseline_kj=0.0,
+                exercise_kj=0.0, calibration_kj_day=0.0, days=1.0,
+            ):
+                return float(start_weight_kg) + self.energy_to_weight_delta(
+                    float(intake_kj) - float(baseline_kj) - float(exercise_kj)
+                    - float(calibration_kj_day) * float(days)
+                )
+
+        start = date(2026, 8, 20)
+        days = [CalibrationDay(start + timedelta(days=index)) for index in range(6)]
+        days[0] = CalibrationDay(start, actual_weight_kg=70)
+        days[-1] = CalibrationDay(start + timedelta(days=5), actual_weight_kg=69.99)
+
+        result = GridSearchCalibrationEngine(
+            weight_model=ReplacementWeightModel()
+        ).fit(days)
+
+        self.assertTrue(result.fitted)
+
     def test_forty_days_use_only_latest_thirty_natural_days(self) -> None:
         start = date(2026, 7, 1)
         days = [

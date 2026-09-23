@@ -35,6 +35,7 @@ dist/
 *-wal
 *-shm
 *-journal
+*.writer.lock
 backups/
 data_location.json
 data_location.json.tmp

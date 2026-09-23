@@ -140,13 +140,13 @@ class RecipeService:
         with self.db.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT r.*, MAX(e.occurred_at) AS last_used_at
+                SELECT r.*, MAX(e.occurred_at COLLATE CALORIEK_LOCAL) AS last_used_at
                 FROM recipes r
                 JOIN intake_events e
                   ON e.source_type = 'RECIPE' AND e.source_id = r.id AND e.active = 1
                 WHERE r.active = 1
                 GROUP BY r.id
-                ORDER BY last_used_at DESC, r.id DESC
+                ORDER BY last_used_at COLLATE CALORIEK_LOCAL DESC, r.id DESC
                 LIMIT ?
                 """,
                 (limit,),

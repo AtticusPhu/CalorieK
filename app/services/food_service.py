@@ -11,6 +11,7 @@ from app.nutrition import (
     FOOD_NUTRIENT_FIELDS, FOOD_PROVENANCE_SQL, NutrientValues, NutritionContribution, food_contribution, optional_nutrient,
 )
 from app.services.intake_snapshot import save_source_snapshot
+from app.timestamps import preserve_or_normalize_event_update
 
 
 MEAL_TYPES = frozenset({"BREAKFAST", "LUNCH", "DINNER", "SNACK", "OTHER"})
@@ -198,14 +199,14 @@ class FoodService:
         with self.db.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT f.*, MAX(e.occurred_at) AS last_used_at,
+                SELECT f.*, MAX(e.occurred_at COLLATE CALORIEK_LOCAL) AS last_used_at,
                        (SELECT applied_at FROM schema_version WHERE version = 3) AS v3_applied_at
                 FROM foods f
                 JOIN intake_events e
                   ON e.source_type = 'FOOD' AND e.source_id = f.id AND e.active = 1
                 WHERE f.active = 1
                 GROUP BY f.id
-                ORDER BY last_used_at DESC, f.id DESC
+                ORDER BY last_used_at COLLATE CALORIEK_LOCAL DESC, f.id DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -605,7 +606,7 @@ class FoodService:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.db.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM intake_events" + where + " ORDER BY occurred_at, id",
+                "SELECT * FROM intake_events" + where + " ORDER BY occurred_at COLLATE CALORIEK_LOCAL, id",
                 parameters,
             ).fetchall()
         return [dict(row) for row in rows]
@@ -632,10 +633,9 @@ class FoodService:
         composition = NutrientValues(
             event["protein_g"], event["fiber_g"], event["fat_g"], event["carbs_g"],
         ).scaled(scale)
-        if occurred_at is None:
-            occurred_value, local_date = event["occurred_at"], event["local_date"]
-        else:
-            occurred_value, local_date = normalize_datetime(occurred_at)
+        occurred_value, local_date = preserve_or_normalize_event_update(
+            event["occurred_at"], event["local_date"], occurred_at,
+        )
         meal_value = normalize_meal_type(meal_type or event["meal_type"])
         timestamp = now_iso()
         with self.db.transaction() as connection:
