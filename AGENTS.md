@@ -7,7 +7,7 @@ Linear:
 - Team: Atticumlos
 - Issue prefix: CAL
 - Project: CalorieK
-- Current milestone: v0.0.3
+- Current milestone: v0.0.4
 
 The Linear fields above are also read by the handoff packer; update them here
 when project metadata changes. The development milestone is not an application

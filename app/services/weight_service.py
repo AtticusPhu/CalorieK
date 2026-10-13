@@ -223,12 +223,12 @@ class WeightService:
         anchor: str | None = None,
         note: str | None = None,
         update_note: bool = False,
-    ) -> None:
-        """Correct a measurement while preserving its creation audit timestamp."""
+    ) -> bool:
+        """Correct an active fact; return False without writes for a true no-op."""
 
-        current = self.get_measurement(measurement_id)
+        current = self.get_measurement(measurement_id, include_inactive=False)
         if current is None:
-            raise LookupError(f"weight measurement {measurement_id} does not exist")
+            raise LookupError(f"active weight measurement {measurement_id} does not exist")
         weight_value = (
             float(current["weight_kg"])
             if weight_kg is None
@@ -241,6 +241,16 @@ class WeightService:
             str(current["occurred_at"]), str(current["local_date"]), occurred_at,
         )
         note_value = note if update_note or note is not None else current["note"]
+        # Compare final storage values, not rounded UI values or datetime objects.
+        # Reading also checks the single-writer lease, even on the no-write path.
+        if (
+            weight_value == current["weight_kg"]
+            and occurred_value == current["occurred_at"]
+            and local_date == current["local_date"]
+            and anchor_value == current["anchor"]
+            and note_value == current["note"]
+        ):
+            return False
 
         with self.db.transaction() as connection:
             cursor = connection.execute(
@@ -248,7 +258,7 @@ class WeightService:
                 UPDATE weight_measurements
                 SET occurred_at = ?, local_date = ?, weight_kg = ?, anchor = ?,
                     note = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND active = 1
                 """,
                 (
                     occurred_value,
@@ -265,6 +275,7 @@ class WeightService:
             self.db.mark_dirty(
                 min(str(current["local_date"]), local_date), connection=connection
             )
+        return True
 
     update_weight = update_measurement
     update_weight_measurement = update_measurement

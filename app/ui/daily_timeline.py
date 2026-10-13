@@ -14,6 +14,7 @@ from .context import DailyRecordDTO, UIContext
 from .exercise_dialog import ExerciseDialog
 from .food_dialog import FoodDialog
 from .nutrition import NUTRIENT_CAPTIONS
+from .weight_dialog import WeightDialog
 
 
 class DailyTimelineDialog(QDialog):
@@ -74,17 +75,20 @@ class DailyTimelineDialog(QDialog):
                 item = QTableWidgetItem(value)
                 item.setToolTip(record.note)
                 self.table.setItem(row, col, item)
-            if record.kind != "weight":
-                edit = QPushButton("编辑")
-                edit.setAccessibleName(f"编辑 {record.occurred_at:%H:%M} {record.name}")
-                edit.clicked.connect(lambda _checked=False, entry=record: self.edit_record(entry))
-                self.table.setCellWidget(row, 6, edit)
+            edit = QPushButton("编辑")
+            edit.setAccessibleName(f"编辑 {record.occurred_at:%H:%M} {record.name}")
+            edit.clicked.connect(lambda _checked=False, entry=record: self.edit_record(entry))
+            self.table.setCellWidget(row, 6, edit)
         self.table.resizeColumnsToContents()
         self.empty.setVisible(not records)
 
     def edit_record(self, record: DailyRecordDTO) -> None:
-        dialog_type = FoodDialog if record.kind == "intake" else ExerciseDialog
+        dialog_type = {
+            "intake": FoodDialog, "exercise": ExerciseDialog, "weight": WeightDialog,
+        }[record.kind]
         dialog = dialog_type(self._context, self, record=record)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            if record.kind == "weight" and not dialog.changed:
+                return
             self.refresh()
             self.data_changed.emit()

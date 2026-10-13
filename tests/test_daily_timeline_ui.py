@@ -71,7 +71,7 @@ class DailyTimelineUITests(unittest.TestCase):
         timeline = self.keep(DailyTimelineDialog(self.context, self.day))
         self.assertEqual(timeline.table.item(0, 2).text(), "Saved food")
         self.assertIsInstance(timeline.table.cellWidget(0, 6), QPushButton)
-        self.assertIsNone(timeline.table.cellWidget(1, 6))
+        self.assertIsInstance(timeline.table.cellWidget(1, 6), QPushButton)
         changes = Mock()
         timeline.data_changed.connect(changes)
         with patch("app.ui.daily_timeline.FoodDialog") as editor:
@@ -80,6 +80,47 @@ class DailyTimelineUITests(unittest.TestCase):
         editor.assert_called_once_with(self.context, timeline, record=self.record)
         self.assertEqual(self.context.get_daily_records.call_count, 2)
         self.assertEqual(self.context.get_daily_nutrition.call_count, 2)
+        changes.assert_called_once()
+
+    def test_weight_buttons_dispatch_each_original_record_and_refresh_on_change_only(self):
+        records = [
+            DailyRecordDTO("weight", 11, self.when, "Weight", amount=79.5, unit="kg", weight_anchor="OPEN"),
+            DailyRecordDTO("weight", 19, self.when + timedelta(minutes=1), "Weight", amount=69.5, unit="kg", weight_anchor="CLOSE"),
+        ]
+        self.context.get_daily_records.return_value = records
+        self.context.get_daily_nutrition.return_value = DailyNutrition(self.day, NutrientValues(), 0, 0)
+        timeline = self.keep(DailyTimelineDialog(self.context, self.day))
+        changes = Mock()
+        timeline.data_changed.connect(changes)
+        for row, record in enumerate(records):
+            with self.subTest(record_id=record.record_id):
+                with patch("app.ui.daily_timeline.WeightDialog") as editor:
+                    editor.return_value.exec.return_value = QDialog.DialogCode.Accepted
+                    editor.return_value.changed = True
+                    timeline.table.cellWidget(row, 6).click()
+                editor.assert_called_once_with(self.context, timeline, record=record)
+        self.assertEqual(changes.call_count, 2)
+        self.assertEqual(self.context.get_daily_records.call_count, 3)
+        self.assertEqual(self.context.get_daily_nutrition.call_count, 3)
+        for result in (QDialog.DialogCode.Accepted, QDialog.DialogCode.Rejected):
+            with patch("app.ui.daily_timeline.WeightDialog") as editor:
+                editor.return_value.exec.return_value = result
+                editor.return_value.changed = False
+                timeline.table.cellWidget(0, 6).click()
+        self.assertEqual(changes.call_count, 2)
+        self.assertEqual(self.context.get_daily_records.call_count, 3)
+
+    def test_exercise_timeline_still_dispatches_exercise_dialog(self):
+        record = DailyRecordDTO("exercise", 8, self.when, "Exercise", duration_min=20)
+        self.context.get_daily_records.return_value = [record]
+        self.context.get_daily_nutrition.return_value = DailyNutrition(self.day, NutrientValues(), 0, 0)
+        timeline = self.keep(DailyTimelineDialog(self.context, self.day))
+        changes = Mock()
+        timeline.data_changed.connect(changes)
+        with patch("app.ui.daily_timeline.ExerciseDialog") as editor:
+            editor.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            timeline.table.cellWidget(0, 6).click()
+        editor.assert_called_once_with(self.context, timeline, record=record)
         changes.assert_called_once()
 
     def test_intake_ordinary_edit_keeps_snapshot_precision_and_time_offset(self):

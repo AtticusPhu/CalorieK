@@ -51,6 +51,8 @@ from app.ui.context import (
     SettingsDraft,
     TreemapItemDTO,
     WeightDraft,
+    WeightEditDraft,
+    WeightRecalculationError,
 )
 
 
@@ -355,6 +357,7 @@ class ApplicationContext:
             records.append(DailyRecordDTO(
                 "weight", int(row["id"]), parse_datetime(row["occurred_at"]),
                 "体重", note=row["note"] or "", amount=float(row["weight_kg"]), unit="kg",
+                weight_anchor=row["anchor"],
             ))
         # Match existing local-calendar calculations; retain original offsets in DTOs.
         return tuple(sorted(records, key=lambda item: (
@@ -460,6 +463,70 @@ class ApplicationContext:
             note=measurement.note,
         )
         self.daily.ensure_calculated(max(measurement.occurred_at.date(), date.today()))
+
+    def update_weight(self, record_id: int, edit: WeightEditDraft) -> bool:
+        from app.services.weight_service import WeightService
+
+        weights = WeightService(self.database)
+        old = weights.get_measurement(record_id, include_inactive=False)
+        if old is None:
+            raise LookupError(f"active weight measurement {record_id} does not exist")
+        old_day = date.fromisoformat(old["local_date"])
+        target_day = edit.occurred_at.date() if edit.occurred_at is not None else old_day
+        # Include previously displayed future dates, not just today's dashboard.
+        # Read before committing the fact so a range lookup failure cannot leave
+        # an unreported saved edit. Dirty rows must participate in this boundary.
+        with self.database.connection() as connection:
+            if target_day != old_day:
+                # Calculation uses profile_id=1 and effective-dated revisions,
+                # not the latest revision/current settings. Reject an unsupported
+                # calendar day BEFORE the fact and dirty range can be written.
+                # No active flag exists on profile_revisions in this schema.
+                first_effective = connection.execute(
+                    "SELECT MIN(effective_from) FROM profile_revisions WHERE profile_id = 1"
+                ).fetchone()[0]
+                if first_effective is None:
+                    raise ValueError(
+                        "无法修改称重日期：没有可用的用户资料版本。"
+                        "请先恢复或完善用户资料，再重试；称重记录未修改。"
+                    )
+                earliest_day = date.fromisoformat(first_effective)
+                if target_day < earliest_day:
+                    raise ValueError(
+                        f"无法将称重移到 {target_day.isoformat()}："
+                        f"最早支持的称重日期为 {earliest_day.isoformat()}（首个用户资料生效日）。"
+                        "请选择该日或之后的日期后重试；称重记录未修改。"
+                    )
+                # The daily calculation iterates through the day after its end;
+                # date.max has no successor and cannot be rebuilt safely.
+                if target_day == date.max:
+                    raise ValueError(
+                        "无法将称重移到 9999-12-31：该日期超出每日计算支持范围。"
+                        "请选择更早的实际称重日期后重试；称重记录未修改。"
+                    )
+            cached_through = connection.execute(
+                "SELECT MAX(date) FROM daily_metrics_cache"
+            ).fetchone()[0]
+        through = max(
+            date.today(), old_day, target_day,
+            date.fromisoformat(cached_through) if cached_through else date.today(),
+        )
+        changed = weights.update_measurement(
+            record_id, weight_kg=edit.weight_kg, occurred_at=edit.occurred_at,
+            anchor=edit.anchor, note=edit.note, update_note=edit.note is not None,
+        )
+        if not changed:
+            return False
+        # The fact and its dirty marker committed atomically. Rebuild separately:
+        # failure must retain the corrected fact and a retryable dirty range.
+        try:
+            self.daily.ensure_calculated(through)
+        except Exception as exc:
+            raise WeightRecalculationError(
+                "称重记录已保存，但图表重算失败。请关闭编辑并刷新首页重试。\n"
+                f"{exc}"
+            ) from exc
+        return True
 
     def list_foods(
         self, query: str = "", include_inactive: bool = False

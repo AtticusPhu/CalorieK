@@ -144,6 +144,7 @@ class DailyRecordDTO:
     energy_kj: float = 0.0
     duration_min: float = 0.0
     exercise_type_id: int | None = None
+    weight_anchor: AnchorMode = "AUTO"
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +201,24 @@ class WeightDraft:
     weight_kg: float
     anchor: AnchorMode = "AUTO"
     note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WeightEditDraft:
+    """A patch to one actual measurement, not a new measurement.
+
+    None means leave the stored field untouched (including its precision).
+    A note of "" explicitly clears the note; None preserves even a SQL NULL.
+    """
+
+    weight_kg: float | None = None
+    occurred_at: datetime | None = None
+    anchor: AnchorMode | None = None
+    note: str | None = None
+
+
+class WeightRecalculationError(RuntimeError):
+    """The weight patch committed, but derived results still need rebuilding."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,6 +402,10 @@ class UIContext(Protocol):
 
     def record_weight(self, measurement: WeightDraft) -> None: ...
 
+    def update_weight(self, record_id: int, edit: WeightEditDraft) -> bool:
+        """Return whether the measurement changed; propagate save/rebuild errors."""
+        ...
+
     def list_foods(
         self,
         query: str = "",
@@ -453,4 +476,6 @@ __all__ = [
     "TreemapItemDTO",
     "UIContext",
     "WeightDraft",
+    "WeightEditDraft",
+    "WeightRecalculationError",
 ]
