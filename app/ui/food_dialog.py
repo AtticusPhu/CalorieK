@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from app.energy_units import format_energy
-from .numeric_input import PreciseDoubleSpinBox
+from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
+from .nutrition import NUTRIENT_CAPTIONS, OptionalNutrientEditor
+from app.nutrition import NUTRIENT_NAMES, NutrientValues
 
 from typing import cast
 
@@ -15,12 +17,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
+    QGroupBox,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
+    QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -30,6 +35,9 @@ from .context import (
     FoodServingDTO,
     DailyRecordDTO,
     IntakeEditDraft,
+    IntakeSnapshotEdit,
+    CustomIntakeEdit,
+    RecordRecalculationError,
     IntakeDraft,
     IntakeSection,
     IntakeSourceDTO,
@@ -56,6 +64,7 @@ class FoodDialog(QDialog):
         self._energy_unit = context.get_energy_display_unit()
         self._selected: IntakeSourceDTO | None = None
         self._record = record
+        self.changed = False
         self.setWindowTitle("编辑饮食" if record else "记录饮食")
         self.setMinimumSize(620, 650)
         self.setAccessibleName("饮食编辑" if record else "饮食录入")
@@ -68,6 +77,9 @@ class FoodDialog(QDialog):
         self.replace_source = QCheckBox("更换食品 / 食谱或单位（按当前来源重新计算快照）")
         self.replace_source.setVisible(record is not None)
         self.replace_source.toggled.connect(self._toggle_replacement)
+        self.manual_snapshot = QCheckBox("手动修正这条记录的热量 / 营养总量（不修改食品库）")
+        self.manual_snapshot.setVisible(record is not None)
+        self.manual_snapshot.toggled.connect(self._toggle_snapshot)
 
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("饮食来源")
@@ -147,6 +159,46 @@ class FoodDialog(QDialog):
         self.note_edit.setAccessibleName("饮食备注")
         form.addRow("备注", self.note_edit)
 
+        self.custom_fields = QGroupBox("CUSTOM 自定义记录（无食品库关联）")
+        custom_form = QFormLayout(self.custom_fields)
+        self.custom_name = QLineEdit()
+        self.custom_name.setAccessibleName("自定义记录名称")
+        self.custom_unit = QLineEdit()
+        self.custom_unit.setAccessibleName("自定义记录单位")
+        custom_form.addRow("名称 *", self.custom_name)
+        custom_form.addRow("单位 *", self.custom_unit)
+        self.custom_fields.setVisible(record is not None and record.intake_source_type == "CUSTOM")
+
+        self.snapshot_fields = QGroupBox("这条记录的历史总量（不是每 100g 数值）")
+        snapshot_form = QFormLayout(self.snapshot_fields)
+        self.snapshot_hint = QLabel(
+            "普通份量更正按原快照比例缩放；勾选手动修正后，下方数值是最终份量的总量，"
+            "不再随份量自动缩放。修改营养将明确保存四项已知 / 未知状态；未知不按零计算。"
+        )
+        self.snapshot_hint.setWordWrap(True)
+        snapshot_form.addRow(self.snapshot_hint)
+        self.snapshot_unit = QComboBox()
+        self.snapshot_unit.addItem("kJ", "kj")
+        self.snapshot_unit.addItem("kcal", "kcal")
+        self.snapshot_unit.setCurrentIndex(self.snapshot_unit.findData(self._energy_unit))
+        self.snapshot_energy = EnergySpinBox(unit=self._energy_unit)
+        self.snapshot_energy.set_kj_range(0, 1e9)
+        self.snapshot_energy.setAccessibleName("这条记录的能量总量")
+        self.snapshot_unit.currentIndexChanged.connect(
+            lambda _index: self.snapshot_energy.set_display_unit(self.snapshot_unit.currentData())
+        )
+        snapshot_form.addRow("能量显示单位", self.snapshot_unit)
+        snapshot_form.addRow("能量总量 *", self.snapshot_energy)
+        self.nutrient_editors = {}
+        for name, caption in zip(NUTRIENT_NAMES, NUTRIENT_CAPTIONS, strict=True):
+            editor = OptionalNutrientEditor(caption)
+            editor.known.setAccessibleName(f"这条记录的{caption}总量已知")
+            editor.spin.setAccessibleName(f"这条记录的{caption}总克数")
+            self.nutrient_editors[name] = editor
+            snapshot_form.addRow(caption, editor)
+        self.snapshot_fields.setEnabled(False)
+        self.snapshot_fields.setVisible(record is not None)
+
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -163,8 +215,19 @@ class FoodDialog(QDialog):
         layout.addWidget(title)
         layout.addWidget(helper)
         layout.addWidget(self.replace_source)
+        layout.addWidget(self.manual_snapshot)
         layout.addWidget(self.tabs, 1)
-        layout.addLayout(form)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addLayout(form)
+        body_layout.addWidget(self.custom_fields)
+        body_layout.addWidget(self.snapshot_fields)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 2)
         layout.addWidget(self.buttons)
         self._load_initial_sections()
         if record is not None:
@@ -183,17 +246,32 @@ class FoodDialog(QDialog):
         self.unit_combo.setEnabled(False)
         self.selected_label.setText(record.name)
         self.nutrition_label.setText(f"已保存能量 {format_energy(record.energy_kj, self._energy_unit)}；按原快照比例调整")
+        if record.unit == "recipe":
+            self.nutrition_label.setText(self.nutrition_label.text() + "；1 份 = 整份食谱，0.5 份 = 50%（不是 0.5%）")
         self.amount_spin.setRange(min(0.001, record.amount), max(100000.0, record.amount))
         self.amount_spin.setSuffix(f" {self.unit_combo.currentText()}")
         self.amount_spin.setValue(record.amount)
+        self.replace_source.setEnabled(record.intake_source_type != "CUSTOM")
+        self.custom_fields.setVisible(record.intake_source_type == "CUSTOM")
         if initial:
             self.at_edit.setDateTime(QDateTime(record.occurred_at.replace(tzinfo=None)))
             self._original_ui_time = self.at_edit.dateTime()
             self.meal_combo.setCurrentIndex({"BREAKFAST": 0, "LUNCH": 1, "DINNER": 2, "SNACK": 3}.get(record.meal_type, 4))
             self.note_edit.setPlainText(record.note)
+            self.custom_name.setText(record.name)
+            self.custom_unit.setText(record.unit)
+            self.snapshot_energy.set_energy_kj(record.energy_kj)
+            for name, editor in self.nutrient_editors.items():
+                value = getattr(record.intake_nutrition.values, name)
+                editor.spin.setValue(value if value is not None else 0.0)
+                editor.known.setChecked(value is not None)
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(True)
 
     def _toggle_replacement(self, checked: bool) -> None:
+        if checked:
+            self.manual_snapshot.setChecked(False)
+        self.manual_snapshot.setEnabled(not checked)
+        self.snapshot_fields.setVisible(not checked and self._record is not None)
         self.tabs.setVisible(checked)
         self.unit_combo.setEnabled(checked)
         if checked:
@@ -203,6 +281,18 @@ class FoodDialog(QDialog):
             self._selection_changed(None)
         else:
             self._restore_snapshot_fields()
+
+    def _toggle_snapshot(self, checked: bool) -> None:
+        if checked and self.replace_source.isChecked():
+            self.replace_source.setChecked(False)
+        self.replace_source.setEnabled(not checked and self._record is not None
+                                       and self._record.intake_source_type != "CUSTOM")
+        self.snapshot_fields.setEnabled(checked)
+        if self._record is not None:
+            self.nutrition_label.setText(
+                "手动模式：下方填写最终份量的能量与营养总量；不读取来源、不按份量缩放。"
+                if checked else "份量更正：按已保存快照同比例缩放；更换来源请使用独立选项。"
+            )
 
     def _new_source_list(self) -> QListWidget:
         widget = QListWidget()
@@ -359,6 +449,7 @@ class FoodDialog(QDialog):
             QMessageBox.critical(self, "饮食未保存", f"无法保存这次饮食记录。\n\n{exc}")
             save.setEnabled(True)
             return
+        self.changed = True
         self.accept()
 
     def _occurred_at(self):
@@ -370,13 +461,29 @@ class FoodDialog(QDialog):
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
         save.setEnabled(False)
         try:
-            self._context.update_intake(self._record.record_id, IntakeEditDraft(
+            snapshot = None
+            if self.manual_snapshot.isChecked():
+                snapshot = IntakeSnapshotEdit(
+                    self.snapshot_energy.energy_kj(),
+                    NutrientValues(*(self.nutrient_editors[name].value() for name in NUTRIENT_NAMES)),
+                )
+            custom = (CustomIntakeEdit(self.custom_name.text(), self.custom_unit.text())
+                      if self._record.intake_source_type == "CUSTOM" else None)
+            self.changed = self._context.update_intake(self._record.record_id, IntakeEditDraft(
                 occurred_at=self._occurred_at(), amount=self.amount_spin.value(),
                 meal_category=str(self.meal_combo.currentData()), note=self.note_edit.toPlainText(),
-                replacement=replacement,
+                replacement=replacement, snapshot=snapshot, custom=custom,
             ))
         except Exception as exc:
-            QMessageBox.critical(self, "饮食未保存", f"无法修改这次饮食记录。\n\n{exc}")
+            if isinstance(exc, RecordRecalculationError):
+                self._record = exc.record
+                self.replace_source.setChecked(False)
+                self.manual_snapshot.setChecked(False)
+                self._restore_snapshot_fields(initial=True)
+            if isinstance(exc, RecordRecalculationError):
+                QMessageBox.critical(self, "记录已保存，图表待刷新", str(exc))
+            else:
+                QMessageBox.critical(self, "饮食未保存", f"无法修改这次饮食记录。\n\n{exc}")
             save.setEnabled(True)
             return
         self.accept()

@@ -7,6 +7,7 @@ from typing import cast
 from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDateTimeEdit,
     QDialog,
     QDialogButtonBox,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .context import DailyRecordDTO, ExerciseEditDraft, ExerciseDraft, ExerciseSection, ExerciseTypeDTO, UIContext
+from .context import DailyRecordDTO, ExerciseEditDraft, ExerciseDraft, ExerciseSection, ExerciseTypeDTO, UIContext, RecordRecalculationError
 from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
 from app.energy_units import energy_unit_label, format_energy, kcal_to_kj
 
@@ -35,6 +36,7 @@ class ExerciseDialog(QDialog):
         self._energy_unit = context.get_energy_display_unit()
         self._selected: ExerciseTypeDTO | None = None
         self._record = record
+        self.changed = False
         self.setWindowTitle("编辑运动" if record else "记录运动")
         self.setMinimumSize(560, 560)
         self.setAccessibleName("运动编辑" if record else "运动录入")
@@ -88,6 +90,14 @@ class ExerciseDialog(QDialog):
             f"额外运动消耗（{energy_unit_label(self._energy_unit)}）"
         )
         form.addRow("额外运动消耗 *", self.energy_spin)
+        self.energy_unit_combo = QComboBox()
+        self.energy_unit_combo.addItem("kJ", "kj")
+        self.energy_unit_combo.addItem("kcal", "kcal")
+        self.energy_unit_combo.setCurrentIndex(self.energy_unit_combo.findData(self._energy_unit))
+        self.energy_unit_combo.currentIndexChanged.connect(
+            lambda _index: self.energy_spin.set_display_unit(self.energy_unit_combo.currentData())
+        )
+        form.addRow("能量显示单位", self.energy_unit_combo)
 
         self.note_edit = QPlainTextEdit()
         self.note_edit.setMaximumHeight(68)
@@ -115,6 +125,11 @@ class ExerciseDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.buttons)
         self._load_all_sections()
+        if record is not None:
+            self._restore_record()
+
+    def _restore_record(self) -> None:
+        record = self._record
         if record is not None:
             self.tabs.setVisible(False)
             self.selected_label.setText(record.name)
@@ -200,13 +215,20 @@ class ExerciseDialog(QDialog):
             try:
                 occurred = (self._record.occurred_at if self.at_edit.dateTime() == self._original_ui_time
                             else self.at_edit.dateTime().toPython())
-                self._context.update_exercise(self._record.record_id, ExerciseEditDraft(
+                self.changed = self._context.update_exercise(self._record.record_id, ExerciseEditDraft(
                     occurred_at=occurred, duration_min=self.duration_spin.value(),
                     active_kj=self.energy_spin.energy_kj(), note=self.note_edit.toPlainText(),
                     replacement_type_id=self._selected.exercise_type_id if self.replace_type.isChecked() else None,
                 ))
             except Exception as exc:
-                QMessageBox.critical(self, "运动未保存", f"无法修改这次运动。\n\n{exc}")
+                if isinstance(exc, RecordRecalculationError):
+                    self._record = exc.record
+                    self.replace_type.setChecked(False)
+                    self._restore_record()
+                if isinstance(exc, RecordRecalculationError):
+                    QMessageBox.critical(self, "记录已保存，图表待刷新", str(exc))
+                else:
+                    QMessageBox.critical(self, "运动未保存", f"无法修改这次运动。\n\n{exc}")
                 save.setEnabled(True)
                 return
             self.accept()
@@ -237,6 +259,7 @@ class ExerciseDialog(QDialog):
             QMessageBox.critical(self, "运动未保存", f"无法保存这次运动。\n\n{exc}")
             save.setEnabled(True)
             return
+        self.changed = True
         self.accept()
 
 

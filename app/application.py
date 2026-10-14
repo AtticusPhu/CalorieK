@@ -14,7 +14,7 @@ from app.color_modes import candle_palette, treemap_palette
 from app.db.database import Database
 from app.db.writer_guard import WriterLease
 from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit, format_energy, kcal_to_kj, normalize_energy_unit
-from app.nutrition import DailyNutrition, NutritionContribution, aggregate_contributions, food_contribution, legacy_food_available
+from app.nutrition import DailyNutrition, NutritionContribution, aggregate_contributions, food_contribution, intake_contribution, legacy_food_available
 from app.paths import database_path, ensure_data_dir, save_data_dir_preference
 from app.services.backup_service import BackupService
 from app.services.daily_metrics_service import DailyMetricsService
@@ -30,6 +30,7 @@ from app.ui.context import (
     DashboardDTO,
     DailyRecordDTO,
     IntakeEditDraft,
+    RecordRecalculationError,
     ExerciseEditDraft,
     ExerciseDraft,
     ExerciseSection,
@@ -277,6 +278,8 @@ class ApplicationContext:
         self.daily.ensure_calculated(max(event.occurred_at.date(), date.today()))
 
     def _save_intake_source(self, event: IntakeDraft, replace_event_id: int | None = None) -> None:
+        if event.source_type not in ("food", "recipe"):
+            raise ValueError("replacement source must be FOOD or RECIPE")
         if event.source_type == "recipe":
             if event.unit == "ratio_percent":
                 self.recipes.record_recipe_intake(
@@ -309,50 +312,110 @@ class ApplicationContext:
                 note=event.note,
             )
 
-    def update_intake(self, record_id: int, edit: IntakeEditDraft) -> None:
+    def _record_edit_through(self, old_day: str, occurred_at: datetime) -> date:
+        """Preflight a meal/activity move before any fact or cache write."""
+        target = parse_local_datetime(occurred_at).date()
+        previous = date.fromisoformat(old_day)
+        with self.database.connection() as connection:
+            if target != previous:
+                first_revision = connection.execute(
+                    "SELECT MIN(effective_from) FROM profile_revisions WHERE profile_id = 1"
+                ).fetchone()[0]
+                first_weight = connection.execute(
+                    "SELECT MIN(local_date) FROM weight_measurements WHERE active = 1"
+                ).fetchone()[0]
+                has_profile = connection.execute("SELECT 1 FROM profile WHERE id = 1").fetchone()
+                # Model-less service fixtures may still edit facts. Once there
+                # is a model/profile, never move a fact outside its first candle.
+                if has_profile or first_revision or first_weight:
+                    if not first_revision or not first_weight:
+                        raise ValueError("无法修改记录日期：缺少用户资料或实际称重锚点；请先恢复这些数据。记录未修改。")
+                    earliest = max(date.fromisoformat(first_revision), date.fromisoformat(first_weight))
+                    if target < earliest:
+                        raise ValueError(f"最早支持的记录日期为 {earliest.isoformat()}；请选择该日或之后的日期。记录未修改。")
+                if target == date.max:
+                    raise ValueError("9999-12-31 超出每日计算范围；请选择更早日期。记录未修改。")
+            cached = connection.execute("SELECT MAX(date) FROM daily_metrics_cache").fetchone()[0]
+        return max(previous, target, date.today(), date.fromisoformat(cached) if cached else date.today())
+
+    def _rebuild_record_edit(self, through: date, record: DailyRecordDTO) -> None:
+        try:
+            self.daily.ensure_calculated(through)
+        except Exception as exc:
+            raise RecordRecalculationError(
+                f"记录已保存，但图表重算失败。请关闭编辑并刷新首页重试。\n{exc}", record,
+            ) from exc
+
+    def update_intake(self, record_id: int, edit: IntakeEditDraft) -> bool:
+        if edit.replacement is not None and (edit.snapshot is not None or edit.custom is not None):
+            raise ValueError("更换来源不能与手动快照或 CUSTOM 字段修正同时使用")
         old = self.foods.get_intake_event(record_id, include_inactive=False)
         if old is None:
             raise LookupError(f"active intake event {record_id} does not exist")
+        if old["source_type"] == "CUSTOM" and edit.replacement is not None:
+            raise ValueError("CUSTOM 记录只能修正其自身字段，不能改为食品或食谱来源")
+        through = self._record_edit_through(old["local_date"], edit.occurred_at)
+        # UI displays SQL NULL as empty text; an untouched empty note must not
+        # turn a legacy NULL into a write. Nonempty -> empty still clears it.
+        note = None if old["note"] is None and edit.note == "" else edit.note
         if edit.replacement is None:
-            self.foods.update_intake_event(
+            changed = self.foods.update_intake_event(
                 record_id, amount=edit.amount, occurred_at=edit.occurred_at,
-                meal_type=edit.meal_category, note=edit.note, update_note=True,
+                meal_type=edit.meal_category, note=note, update_note=True,
+                snapshot=edit.snapshot, custom=edit.custom,
             )
         else:
             source = edit.replacement
             self._save_intake_source(IntakeDraft(
                 occurred_at=edit.occurred_at, source_type=source.source_type,
                 source_id=source.source_id, amount=edit.amount, unit=source.unit,
-                meal_category=edit.meal_category, note=edit.note, serving_id=source.serving_id,
+                meal_category=edit.meal_category, note=note, serving_id=source.serving_id,
             ), replace_event_id=record_id)
-        self.daily.ensure_calculated(max(date.fromisoformat(old["local_date"]), edit.occurred_at.date(), date.today()))
+            changed = self.foods.get_intake_event(record_id) != old
+        if changed:
+            self._rebuild_record_edit(through, self._intake_record(self.foods.get_intake_event(record_id)))
+        return changed
 
-    def update_exercise(self, record_id: int, edit: ExerciseEditDraft) -> None:
+    def update_exercise(self, record_id: int, edit: ExerciseEditDraft) -> bool:
         old = self.exercises.get_exercise_event(record_id, include_inactive=False)
         if old is None:
             raise LookupError(f"active exercise event {record_id} does not exist")
-        self.exercises.update_exercise_event(
+        through = self._record_edit_through(old["local_date"], edit.occurred_at)
+        note = None if old["note"] is None and edit.note == "" else edit.note
+        changed = self.exercises.update_exercise_event(
             record_id, exercise_type_id=edit.replacement_type_id, occurred_at=edit.occurred_at,
-            duration_min=edit.duration_min, active_kj=edit.active_kj, note=edit.note, update_note=True,
+            duration_min=edit.duration_min, active_kj=edit.active_kj, note=note, update_note=True,
         )
-        self.daily.ensure_calculated(max(date.fromisoformat(old["local_date"]), edit.occurred_at.date(), date.today()))
+        if changed:
+            self._rebuild_record_edit(through, self._exercise_record(self.exercises.get_exercise_event(record_id)))
+        return changed
+
+    @staticmethod
+    def _intake_record(row: dict) -> DailyRecordDTO:
+        return DailyRecordDTO(
+            "intake", int(row["id"]), parse_datetime(row["occurred_at"]),
+            row["name_snapshot"], note=row["note"] or "", amount=float(row["amount"]),
+            unit=row["unit"], meal_type=row["meal_type"], energy_kj=float(row["kj_snapshot"]),
+            intake_source_type=row["source_type"], intake_source_id=row["source_id"],
+            intake_nutrition=intake_contribution(row),
+        )
+
+    @staticmethod
+    def _exercise_record(row: dict) -> DailyRecordDTO:
+        return DailyRecordDTO(
+            "exercise", int(row["id"]), parse_datetime(row["occurred_at"]),
+            row["name_snapshot"], note=row["note"] or "", duration_min=float(row["duration_min"]),
+            energy_kj=float(row["active_kj"]), exercise_type_id=row["exercise_type_id"],
+        )
 
     def get_daily_records(self, day: date) -> Sequence[DailyRecordDTO]:
         from app.services.weight_service import WeightService
 
         records = []
         for row in self.foods.list_intake_events(local_date=day):
-            records.append(DailyRecordDTO(
-                "intake", int(row["id"]), parse_datetime(row["occurred_at"]),
-                row["name_snapshot"], note=row["note"] or "", amount=float(row["amount"]),
-                unit=row["unit"], meal_type=row["meal_type"], energy_kj=float(row["kj_snapshot"]),
-            ))
+            records.append(self._intake_record(row))
         for row in self.exercises.list_exercise_events(local_date=day):
-            records.append(DailyRecordDTO(
-                "exercise", int(row["id"]), parse_datetime(row["occurred_at"]),
-                row["name_snapshot"], note=row["note"] or "", duration_min=float(row["duration_min"]),
-                energy_kj=float(row["active_kj"]), exercise_type_id=row["exercise_type_id"],
-            ))
+            records.append(self._exercise_record(row))
         for row in WeightService(self.database).list_measurements(local_date=day):
             records.append(DailyRecordDTO(
                 "weight", int(row["id"]), parse_datetime(row["occurred_at"]),

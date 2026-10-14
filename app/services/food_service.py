@@ -7,8 +7,10 @@ from datetime import date, datetime
 from typing import Any
 
 from app.db.database import Database, normalize_datetime, now_iso, row_to_dict
+from app.intake_edits import CustomIntakeEdit, IntakeSnapshotEdit
 from app.nutrition import (
     FOOD_NUTRIENT_FIELDS, FOOD_PROVENANCE_SQL, NutrientValues, NutritionContribution, food_contribution, optional_nutrient,
+    NUTRIENT_NAMES, LEGACY_SNAPSHOT_FIELDS, intake_contribution,
 )
 from app.services.intake_snapshot import save_source_snapshot
 from app.timestamps import preserve_or_normalize_event_update
@@ -620,50 +622,68 @@ class FoodService:
         meal_type: str | None = None,
         note: str | None = None,
         update_note: bool = False,
-    ) -> None:
-        event = self.get_intake_event(event_id)
+        snapshot: IntakeSnapshotEdit | None = None,
+        custom: CustomIntakeEdit | None = None,
+    ) -> bool:
+        """Correct one active fact; ordinary scaling never consults its source.
+
+        Explicit snapshot totals apply to the final amount without scaling.
+        Unchanged effective nutrition does not migrate legacy NULL/0 flags.
+        A changed nutrition vector explicitly materializes known/unknown values;
+        legacy NOT NULL fields use zero placeholders only for unknown nutrients.
+        """
+        event = self.get_intake_event(event_id, include_inactive=False)
         if event is None:
-            raise LookupError(f"intake event {event_id} does not exist")
+            raise LookupError(f"active intake event {event_id} does not exist")
+        if custom is not None:
+            if not isinstance(custom, CustomIntakeEdit) or event["source_type"] != "CUSTOM":
+                raise ValueError("only CUSTOM intake allows direct name/unit correction")
+            if not custom.name.strip() or not custom.unit.strip():
+                raise ValueError("custom intake name and unit must not be empty")
+        if snapshot is not None and not isinstance(snapshot, IntakeSnapshotEdit):
+            raise ValueError("snapshot must be an explicit IntakeSnapshotEdit")
         amount_value = _finite_number(
             amount if amount is not None else event["amount"],
             "amount",
             positive=True,
         )
-        scale = amount_value / float(event["amount"])
-        composition = NutrientValues(
-            event["protein_g"], event["fiber_g"], event["fat_g"], event["carbs_g"],
-        ).scaled(scale)
         occurred_value, local_date = preserve_or_normalize_event_update(
             event["occurred_at"], event["local_date"], occurred_at,
         )
-        meal_value = normalize_meal_type(meal_type or event["meal_type"])
-        timestamp = now_iso()
+        values = dict(
+            occurred_at=occurred_value, local_date=local_date, amount=amount_value,
+            meal_type=normalize_meal_type(event["meal_type"] if meal_type is None else meal_type),
+            note=note if update_note or note is not None else event["note"],
+        )
+        if custom is not None:
+            values.update(name_snapshot=custom.name, unit=custom.unit)
+        if snapshot is None:
+            if amount_value != event["amount"]:
+                scale = amount_value / float(event["amount"])
+                for field in ("kj_snapshot", *LEGACY_SNAPSHOT_FIELDS, *NUTRIENT_NAMES):
+                    value = event[field]
+                    values[field] = None if value is None else _finite_number(float(value) * scale, field)
+                # Deliberately leave nutrition_complete untouched, including NULL.
+        else:
+            values["kj_snapshot"] = _finite_number(snapshot.energy_kj, "energy_kj")
+            nutrients = NutrientValues(*snapshot.nutrients.as_tuple())
+            if nutrients != intake_contribution(event).values:
+                values.update(zip(NUTRIENT_NAMES, nutrients.as_tuple(), strict=True))
+                values.update(zip(LEGACY_SNAPSHOT_FIELDS,
+                                  (0.0 if value is None else value for value in nutrients.as_tuple()), strict=True))
+                values["nutrition_complete"] = int(all(value is not None for value in nutrients.as_tuple()))
+        if all(event[field] == value for field, value in values.items()):
+            return False
+        values["updated_at"] = now_iso()
         with self.db.transaction() as connection:
-            connection.execute(
-                """
-                UPDATE intake_events SET occurred_at = ?, local_date = ?, meal_type = ?,
-                    amount = ?, kj_snapshot = ?, protein_snapshot = ?,
-                    fat_snapshot = ?, carb_snapshot = ?, fiber_snapshot = ?,
-                    note = ?, updated_at = ?,
-                    protein_g = ?, fiber_g = ?, fat_g = ?, carbs_g = ? WHERE id = ?
-                """,
-                (
-                    occurred_value,
-                    local_date,
-                    meal_value,
-                    amount_value,
-                    float(event["kj_snapshot"]) * scale,
-                    float(event["protein_snapshot"]) * scale,
-                    float(event["fat_snapshot"]) * scale,
-                    float(event["carb_snapshot"]) * scale,
-                    float(event["fiber_snapshot"]) * scale,
-                    note if update_note or note is not None else event["note"],
-                    timestamp,
-                    *composition.as_tuple(),
-                    event_id,
-                ),
+            cursor = connection.execute(
+                f"UPDATE intake_events SET {', '.join(f'{field} = ?' for field in values)} WHERE id = ? AND active = 1",
+                (*values.values(), event_id),
             )
+            if cursor.rowcount != 1:
+                raise LookupError(f"active intake event {event_id} does not exist")
             self.db.mark_dirty(min(event["local_date"], local_date), connection=connection)
+        return True
 
     def soft_delete_intake_event(self, event_id: int) -> None:
         event = self.get_intake_event(event_id)

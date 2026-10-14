@@ -88,7 +88,7 @@ class DailyTimelineDialog(QDialog):
         }[record.kind]
         dialog = dialog_type(self._context, self, record=record)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            if record.kind == "weight" and not dialog.changed:
+            if not dialog.changed:
                 return
             self.refresh()
             self.data_changed.emit()

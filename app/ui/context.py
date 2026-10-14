@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal, Protocol, Sequence, runtime_checkable
 
 from app.energy_units import DEFAULT_KJ_PER_KG, EnergyUnit
+from app.intake_edits import CustomIntakeEdit, IntakeSnapshotEdit
 from app.nutrition import DailyNutrition, NutritionContribution
 
 
@@ -127,7 +128,7 @@ class IntakeDraft:
     amount: float
     unit: str
     meal_category: str
-    note: str = ""
+    note: str | None = ""
     serving_id: int | None = None
 
 
@@ -145,6 +146,9 @@ class DailyRecordDTO:
     duration_min: float = 0.0
     exercise_type_id: int | None = None
     weight_anchor: AnchorMode = "AUTO"
+    intake_source_type: Literal["FOOD", "RECIPE", "CUSTOM"] | None = None
+    intake_source_id: int | None = None
+    intake_nutrition: NutritionContribution = field(default_factory=NutritionContribution)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +158,8 @@ class IntakeEditDraft:
     meal_category: str
     note: str
     replacement: IntakeDraft | None = None
+    snapshot: IntakeSnapshotEdit | None = None
+    custom: CustomIntakeEdit | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +225,14 @@ class WeightEditDraft:
 
 class WeightRecalculationError(RuntimeError):
     """The weight patch committed, but derived results still need rebuilding."""
+
+
+class RecordRecalculationError(RuntimeError):
+    """Fact committed; reload this saved record before allowing another edit."""
+
+    def __init__(self, message: str, record: DailyRecordDTO) -> None:
+        super().__init__(message)
+        self.record = record
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,9 +379,9 @@ class UIContext(Protocol):
 
     def get_daily_records(self, day: date) -> Sequence[DailyRecordDTO]: ...
 
-    def update_intake(self, record_id: int, edit: IntakeEditDraft) -> None: ...
+    def update_intake(self, record_id: int, edit: IntakeEditDraft) -> bool: ...
 
-    def update_exercise(self, record_id: int, edit: ExerciseEditDraft) -> None: ...
+    def update_exercise(self, record_id: int, edit: ExerciseEditDraft) -> bool: ...
 
     def has_profile(self) -> bool: ...
 
@@ -452,6 +466,9 @@ __all__ = [
     "DashboardDTO",
     "DailyRecordDTO",
     "IntakeEditDraft",
+    "IntakeSnapshotEdit",
+    "CustomIntakeEdit",
+    "RecordRecalculationError",
     "ExerciseEditDraft",
     "ExerciseDraft",
     "ExerciseSection",

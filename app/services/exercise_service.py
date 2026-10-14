@@ -268,10 +268,10 @@ class ExerciseService:
         occurred_at: datetime | date | str | None = None,
         note: str | None = None,
         update_note: bool = False,
-    ) -> None:
-        event = self.get_exercise_event(event_id)
+    ) -> bool:
+        event = self.get_exercise_event(event_id, include_inactive=False)
         if event is None:
-            raise LookupError(f"exercise event {event_id} does not exist")
+            raise LookupError(f"active exercise event {event_id} does not exist")
         if exercise_type_id is None:
             # A source can be soft deleted without invalidating or freezing its
             # historical facts. Preserve the old snapshot for ordinary corrections.
@@ -294,12 +294,19 @@ class ExerciseService:
         occurred_value, local_date = preserve_or_normalize_event_update(
             event["occurred_at"], event["local_date"], occurred_at,
         )
+        note_value = note if update_note or note is not None else event["note"]
+        if all(event[field] == value for field, value in (
+            ("occurred_at", occurred_value), ("local_date", local_date),
+            ("exercise_type_id", type_id), ("name_snapshot", name_snapshot),
+            ("duration_min", duration_value), ("active_kj", kj_value), ("note", note_value),
+        )):
+            return False
         with self.db.transaction() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE exercise_events SET occurred_at = ?, local_date = ?,
                     exercise_type_id = ?, name_snapshot = ?, duration_min = ?,
-                    active_kj = ?, note = ?, updated_at = ? WHERE id = ?
+                    active_kj = ?, note = ?, updated_at = ? WHERE id = ? AND active = 1
                 """,
                 (
                     occurred_value,
@@ -308,12 +315,15 @@ class ExerciseService:
                     name_snapshot,
                     duration_value,
                     kj_value,
-                    note if update_note or note is not None else event["note"],
+                    note_value,
                     now_iso(),
                     event_id,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise LookupError(f"active exercise event {event_id} does not exist")
             self.db.mark_dirty(min(event["local_date"], local_date), connection=connection)
+        return True
 
     def soft_delete_exercise_event(self, event_id: int) -> None:
         event = self.get_exercise_event(event_id)
