@@ -14,8 +14,8 @@ from main import main
 
 
 class VersionMetadataTests(unittest.TestCase):
-    def test_nutrition_release_keeps_independent_energy_model_generation(self) -> None:
-        self.assertEqual(APP_VERSION, "0.0.3")
+    def test_correction_release_keeps_schema_and_calculation_versions(self) -> None:
+        self.assertEqual(APP_VERSION, "0.0.4")
         self.assertEqual(SCHEMA_VERSION, 3)
         self.assertEqual(LATEST_SCHEMA_VERSION, SCHEMA_VERSION)
         self.assertEqual(CALCULATION_VERSION, "v2-simple-energy-kj-1")
