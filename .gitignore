@@ -14,7 +14,7 @@ ENV/
 .tools/
 *.egg-info/
 
-# Build outputs and bundled binaries (source .spec stays tracked)
+# Build outputs and bundled binaries
 build/
 dist/
 /release/
@@ -24,8 +24,7 @@ dist/
 *.spec.bak
 
 # Local health data, backups and SQLite sidecars in any custom directory
-/data/*
-!/data/.gitkeep
+/data/
 *.db
 *.db-*
 *.sqlite
@@ -86,3 +85,16 @@ _handoff/
 /GIT_INFO.txt
 /HANDOFF_INFO.txt
 /1.txt
+
+# Local-only development, verification and handoff materials
+/tests/
+/benchmarks/
+/docs/
+/AGENTS.md
+/requirements-dev.txt
+/CalorieK.spec
+/*.bat
+/*.cmd
+/*.ps1
+/TEST_CAL*.py
+/TEST_CAL*.sh
