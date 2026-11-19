@@ -20,7 +20,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .context import DailyRecordDTO, UIContext, WeightDraft, WeightEditDraft, WeightRecalculationError
+from .context import (
+    DailyRecordDTO, PostCommitRecalculationError, UIContext, WeightDraft, WeightEditDraft,
+    WeightRecalculationError,
+)
 
 
 class WeightDialog(QDialog):
@@ -34,6 +37,7 @@ class WeightDialog(QDialog):
         self._context = context
         self._record = record
         self.changed = False
+        self.recalculation_pending = False
         self.setWindowTitle("编辑实际体重" if record else "记录实际体重")
         self.setMinimumWidth(430)
         self.setAccessibleName("体重编辑" if record else "体重录入")
@@ -129,6 +133,8 @@ class WeightDialog(QDialog):
 
     def _save(self, advanced_enabled: bool) -> None:
         save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        if self._record is None and (self.changed or not save_button.isEnabled()):
+            return
         save_button.setEnabled(False)
         try:
             if self._record is None:
@@ -150,12 +156,17 @@ class WeightDialog(QDialog):
                     note=(self.note_edit.toPlainText()
                           if self.note_edit.toPlainText() != self._original_ui_note else None),
                 ))
+        except PostCommitRecalculationError as exc:
+            self.changed = True
+            self.recalculation_pending = True
+            QMessageBox.warning(self, "体重已保存，图表待刷新", str(exc))
         except Exception as exc:
             if isinstance(exc, WeightRecalculationError):
                 # This patch really committed. Further edits (including undoing
                 # a field) must compare against that new fact, not the old form.
                 self._remember_edit_values()
-            QMessageBox.critical(self, "体重操作未完成", f"无法完成这次实际称重保存。\n\n{exc}")
+            title = "体重未保存" if self._record is None else "体重操作未完成"
+            QMessageBox.critical(self, title, f"无法完成这次实际称重保存。\n\n{exc}")
             save_button.setEnabled(True)
             return
         self.accept()

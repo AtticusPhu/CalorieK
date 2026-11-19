@@ -48,6 +48,7 @@ from app.ui.context import (
     RecipeDraft,
     RecipeItemDTO,
     RecipeSummaryDTO,
+    PostCommitRecalculationError,
     SettingsDTO,
     SettingsDraft,
     TreemapItemDTO,
@@ -92,6 +93,7 @@ class ApplicationContext:
         self.nutrition = NutritionService(self.database)
         self.exercises = ExerciseService(self.database)
         self.daily = DailyMetricsService(self.database)
+        self._pending_recalculation_through: date | None = None
         self.treemap = TreemapDataService(self.database)
         self.backups = BackupService(self.database.path)
 
@@ -108,6 +110,28 @@ class ApplicationContext:
     def has_profile(self) -> bool:
         return self.profile.is_initialized()
 
+    def _ensure_calculated(self, through: date, *, refresh_model: bool = False) -> None:
+        pending = self._pending_recalculation_through
+        if pending is not None:
+            # Retry the original range, even for a future entry. A settings
+            # save may also have failed before loading the committed model.
+            through = max(through, pending)
+        if refresh_model or pending is not None:
+            self.daily.refresh_model_settings()
+        self.daily.ensure_calculated(through)
+        self._pending_recalculation_through = None
+
+    def _recalculate_after_save(self, through: date, *, refresh_model: bool = False) -> None:
+        try:
+            self._ensure_calculated(through, refresh_model=refresh_model)
+        except Exception as exc:
+            self._pending_recalculation_through = max(
+                through, self._pending_recalculation_through or through
+            )
+            raise PostCommitRecalculationError(
+                f"数据已保存，图表待重算。请在首页点击“刷新”，无需再次保存。\n\n{exc}"
+            ) from exc
+
     def save_initial_profile(self, profile: ProfileDraft) -> None:
         self.profile.create_profile(
             gender=profile.sex,
@@ -121,7 +145,7 @@ class ApplicationContext:
             note=profile.note,
             measured_at=datetime.now(),
         )
-        self.daily.ensure_calculated(date.today())
+        self._recalculate_after_save(date.today())
 
     @staticmethod
     def _food_dto(row: dict) -> FoodDTO:
@@ -274,8 +298,9 @@ class ApplicationContext:
         )
 
     def record_intake(self, event: IntakeDraft) -> None:
+        through = max(event.occurred_at.date(), date.today())
         self._save_intake_source(event)
-        self.daily.ensure_calculated(max(event.occurred_at.date(), date.today()))
+        self._recalculate_after_save(through)
 
     def _save_intake_source(self, event: IntakeDraft, replace_event_id: int | None = None) -> None:
         if event.source_type not in ("food", "recipe"):
@@ -340,7 +365,7 @@ class ApplicationContext:
 
     def _rebuild_record_edit(self, through: date, record: DailyRecordDTO) -> None:
         try:
-            self.daily.ensure_calculated(through)
+            self._ensure_calculated(through)
         except Exception as exc:
             raise RecordRecalculationError(
                 f"记录已保存，但图表重算失败。请关闭编辑并刷新首页重试。\n{exc}", record,
@@ -454,6 +479,7 @@ class ApplicationContext:
         return tuple(result)
 
     def record_exercise(self, event: ExerciseDraft) -> None:
+        through = max(event.occurred_at.date(), date.today())
         self.exercises.record_exercise(
             event.exercise_type_id,
             duration_min=event.duration_min,
@@ -461,7 +487,7 @@ class ApplicationContext:
             occurred_at=event.occurred_at,
             note=event.note,
         )
-        self.daily.ensure_calculated(max(event.occurred_at.date(), date.today()))
+        self._recalculate_after_save(through)
 
     @staticmethod
     def _exercise_type_dto(row: dict, last: dict[str, float | None] | None = None) -> ExerciseTypeDTO:
@@ -519,13 +545,14 @@ class ApplicationContext:
         # show a useful startup error before opening the GUI.
         from app.services.weight_service import WeightService
 
+        through = max(measurement.occurred_at.date(), date.today())
         WeightService(self.database).record_weight(
             weight_kg=measurement.weight_kg,
             occurred_at=measurement.occurred_at,
             anchor=measurement.anchor,
             note=measurement.note,
         )
-        self.daily.ensure_calculated(max(measurement.occurred_at.date(), date.today()))
+        self._recalculate_after_save(through)
 
     def update_weight(self, record_id: int, edit: WeightEditDraft) -> bool:
         from app.services.weight_service import WeightService
@@ -583,7 +610,7 @@ class ApplicationContext:
         # The fact and its dirty marker committed atomically. Rebuild separately:
         # failure must retain the corrected fact and a retryable dirty range.
         try:
-            self.daily.ensure_calculated(through)
+            self._ensure_calculated(through)
         except Exception as exc:
             raise WeightRecalculationError(
                 "称重记录已保存，但图表重算失败。请关闭编辑并刷新首页重试。\n"
@@ -842,8 +869,7 @@ class ApplicationContext:
             return True
         model_changed = self._apply_settings(self.database, settings)
         if model_changed:
-            self.daily.refresh_model_settings()
-            self.daily.ensure_calculated(date.today())
+            self._recalculate_after_save(date.today(), refresh_model=True)
         return model_changed
 
     @staticmethod
@@ -976,6 +1002,7 @@ class ApplicationContext:
 
     def restore_data(self, backup_file: Path) -> None:
         self.backups.restore_backup(backup_file)
+        self._pending_recalculation_through = None
         self.database.initialize(seed_foods=False)
         self.daily.refresh_model_settings()
 
@@ -988,7 +1015,7 @@ class ApplicationContext:
 
     def get_dashboard(self, on_date: date | None = None) -> DashboardDTO:
         target = on_date or date.today()
-        self.daily.ensure_calculated(target)
+        self._ensure_calculated(target)
         start = target - timedelta(days=89)
         metrics = self.daily.list_metrics(start_day=start, end_day=target)
         candles = tuple(

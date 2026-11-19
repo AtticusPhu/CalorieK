@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .context import ProfileDraft, UIContext
+from .context import ProfileDraft, PostCommitRecalculationError, UIContext
 
 
 class ProfileDialog(QDialog):
@@ -174,9 +174,13 @@ class ProfileDialog(QDialog):
             note=self.note_edit.toPlainText().strip(),
         )
         save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        if not save_button.isEnabled():
+            return
         save_button.setEnabled(False)
         try:
             self._context.save_initial_profile(profile)
+        except PostCommitRecalculationError as exc:
+            QMessageBox.warning(self, "资料和首次称重已保存，图表待刷新", str(exc))
         except Exception as exc:  # UI boundary: service supplies user-safe details.
             QMessageBox.critical(
                 self,

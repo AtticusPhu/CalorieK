@@ -38,6 +38,7 @@ from .context import (
     IntakeSnapshotEdit,
     CustomIntakeEdit,
     RecordRecalculationError,
+    PostCommitRecalculationError,
     IntakeDraft,
     IntakeSection,
     IntakeSourceDTO,
@@ -65,6 +66,7 @@ class FoodDialog(QDialog):
         self._selected: IntakeSourceDTO | None = None
         self._record = record
         self.changed = False
+        self.recalculation_pending = False
         self.setWindowTitle("编辑饮食" if record else "记录饮食")
         self.setMinimumSize(620, 650)
         self.setAccessibleName("饮食编辑" if record else "饮食录入")
@@ -442,9 +444,14 @@ class FoodDialog(QDialog):
             self._save_edit(draft)
             return
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        if self.changed or not save.isEnabled():
+            return
         save.setEnabled(False)
         try:
             self._context.record_intake(draft)
+        except PostCommitRecalculationError as exc:
+            self.recalculation_pending = True
+            QMessageBox.warning(self, "饮食已保存，图表待刷新", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "饮食未保存", f"无法保存这次饮食记录。\n\n{exc}")
             save.setEnabled(True)

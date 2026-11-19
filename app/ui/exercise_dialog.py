@@ -22,7 +22,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .context import DailyRecordDTO, ExerciseEditDraft, ExerciseDraft, ExerciseSection, ExerciseTypeDTO, UIContext, RecordRecalculationError
+from .context import (
+    DailyRecordDTO, ExerciseEditDraft, ExerciseDraft, ExerciseSection, ExerciseTypeDTO,
+    RecordRecalculationError, PostCommitRecalculationError, UIContext,
+)
 from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
 from app.energy_units import energy_unit_label, format_energy, kcal_to_kj
 
@@ -37,6 +40,7 @@ class ExerciseDialog(QDialog):
         self._selected: ExerciseTypeDTO | None = None
         self._record = record
         self.changed = False
+        self.recalculation_pending = False
         self.setWindowTitle("编辑运动" if record else "记录运动")
         self.setMinimumSize(560, 560)
         self.setAccessibleName("运动编辑" if record else "运动录入")
@@ -252,9 +256,14 @@ class ExerciseDialog(QDialog):
             note=self.note_edit.toPlainText().strip(),
         )
         save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        if self.changed or not save.isEnabled():
+            return
         save.setEnabled(False)
         try:
             self._context.record_exercise(draft)
+        except PostCommitRecalculationError as exc:
+            self.recalculation_pending = True
+            QMessageBox.warning(self, "运动已保存，图表待刷新", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "运动未保存", f"无法保存这次运动。\n\n{exc}")
             save.setEnabled(True)

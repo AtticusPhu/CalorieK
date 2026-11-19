@@ -334,11 +334,12 @@ class DashboardPage(QWidget):
             return f"今天 {measured_at:%H:%M}"
         return measured_at.strftime("%Y-%m-%d %H:%M")
 
-    def _run_entry_dialog(self, dialog: QDialog) -> None:
-        # Keeping the common orchestration here guarantees the dashboard is
-        # refreshed after any successful high-frequency entry.
+    def _run_entry_dialog(self, dialog: FoodDialog | ExerciseDialog | WeightDialog) -> None:
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh()
+            if dialog.recalculation_pending:
+                self.as_of_label.setText("记录已保存，点击“刷新”重算图表")
+            else:
+                self.refresh()
             self.data_changed.emit()
 
     def open_food_dialog(self) -> None:

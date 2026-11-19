@@ -113,7 +113,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root_widget)
 
         self.dashboard_page.data_changed.connect(
-            lambda: self.statusBar().showMessage("记录已保存，首页已重新计算。", 5000)
+            lambda: self.statusBar().showMessage("记录已保存。", 5000)
         )
         self.food_library_page.data_changed.connect(self._food_library_changed)
         self.recipe_library_page.data_changed.connect(self._recipe_library_changed)
@@ -238,7 +238,7 @@ class MainWindow(QMainWindow):
             self.dashboard_page.refresh_display_unit()
         for page in (self.food_library_page, self.recipe_library_page, self.exercise_library_page):
             page.refresh()
-        self.statusBar().showMessage("设置已保存，所有页面的显示单位与图表已更新。", 5000)
+        self.statusBar().showMessage("设置已保存。", 5000)
 
     def _bootstrap(self) -> None:
         if self._bootstrapped:

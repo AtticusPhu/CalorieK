@@ -223,6 +223,10 @@ class WeightEditDraft:
     note: str | None = None
 
 
+class PostCommitRecalculationError(RuntimeError):
+    """The save committed. Refresh the dashboard to retry the derived calculation."""
+
+
 class WeightRecalculationError(RuntimeError):
     """The weight patch committed, but derived results still need rebuilding."""
 
@@ -373,7 +377,11 @@ class SettingsDraft:
 
 @runtime_checkable
 class UIContext(Protocol):
-    """Application-facing operations required by the Qt presentation layer."""
+    """Application-facing operations required by the Qt presentation layer.
+
+    A PostCommitRecalculationError from entry, initial setup or settings means
+    the save completed. Retry through get_dashboard() without resubmitting it.
+    """
 
     def get_daily_nutrition(self, day: date) -> DailyNutrition: ...
 
@@ -469,6 +477,7 @@ __all__ = [
     "IntakeSnapshotEdit",
     "CustomIntakeEdit",
     "RecordRecalculationError",
+    "PostCommitRecalculationError",
     "ExerciseEditDraft",
     "ExerciseDraft",
     "ExerciseSection",

@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from app.energy_units import kcal_to_kj, normalize_energy_unit
 
-from .context import SettingsDTO, SettingsDraft, UIContext
+from .context import PostCommitRecalculationError, SettingsDTO, SettingsDraft, UIContext
 from .numeric_input import EnergySpinBox, PreciseDoubleSpinBox
 
 
@@ -271,6 +271,8 @@ class SettingsPage(QWidget):
             combo.setCurrentIndex(index)
 
     def save(self) -> None:
+        if not self.save_button.isEnabled():
+            return
         if self.birth_edit.date() >= QDate.currentDate():
             QMessageBox.warning(self, "检查出生日期", "出生日期必须早于今天。")
             self.birth_edit.setFocus()
@@ -309,15 +311,20 @@ class SettingsPage(QWidget):
             energy_display_unit=normalize_energy_unit(self.energy_unit_combo.currentData()),
         )
         self.save_button.setEnabled(False)
+        status = "设置已保存。"
         try:
             model_changed = self._context.save_settings(draft)
+        except PostCommitRecalculationError as exc:
+            model_changed = True
+            status = "设置已保存。可在首页刷新图表。"
+            QMessageBox.warning(self, "设置已保存，图表待刷新", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "设置未保存", f"无法保存设置。\n\n{exc}")
-            self.save_button.setEnabled(True)
             return
-        self.save_button.setEnabled(True)
+        finally:
+            self.save_button.setEnabled(True)
         self.load()
-        self.status_label.setText("设置已保存；显示单位和图表已更新。")
+        self.status_label.setText(status)
         self.settings_saved.emit(model_changed)
 
     def _choose_data_directory(self) -> None:
