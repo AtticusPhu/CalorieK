@@ -19,6 +19,7 @@ from app.paths import database_path, ensure_data_dir, save_data_dir_preference
 from app.services.backup_service import BackupService
 from app.services.daily_metrics_service import DailyMetricsService
 from app.services.exercise_service import ExerciseService
+from app.services.fact_dates import LAST_CALCULABLE_DAY, validate_fact_change
 from app.services.food_service import FoodService
 from app.services.nutrition_service import NutritionService
 from app.services.profile_service import ProfileService
@@ -337,31 +338,24 @@ class ApplicationContext:
                 note=event.note,
             )
 
-    def _record_edit_through(self, old_day: str, occurred_at: datetime) -> date:
-        """Preflight a meal/activity move before any fact or cache write."""
-        target = parse_local_datetime(occurred_at).date()
-        previous = date.fromisoformat(old_day)
+    def _record_edit_through(
+        self, old_day: str, occurred_at: datetime | None, *, weight_id: int | None = None,
+    ) -> date:
+        """Preflight a move and retain the range of already materialized charts."""
+        target = parse_local_datetime(occurred_at).date().isoformat() if occurred_at is not None else old_day
         with self.database.connection() as connection:
-            if target != previous:
-                first_revision = connection.execute(
-                    "SELECT MIN(effective_from) FROM profile_revisions WHERE profile_id = 1"
-                ).fetchone()[0]
-                first_weight = connection.execute(
-                    "SELECT MIN(local_date) FROM weight_measurements WHERE active = 1"
-                ).fetchone()[0]
-                has_profile = connection.execute("SELECT 1 FROM profile WHERE id = 1").fetchone()
-                # Model-less service fixtures may still edit facts. Once there
-                # is a model/profile, never move a fact outside its first candle.
-                if has_profile or first_revision or first_weight:
-                    if not first_revision or not first_weight:
-                        raise ValueError("无法修改记录日期：缺少用户资料或实际称重锚点；请先恢复这些数据。记录未修改。")
-                    earliest = max(date.fromisoformat(first_revision), date.fromisoformat(first_weight))
-                    if target < earliest:
-                        raise ValueError(f"最早支持的记录日期为 {earliest.isoformat()}；请选择该日或之后的日期。记录未修改。")
-                if target == date.max:
-                    raise ValueError("9999-12-31 超出每日计算范围；请选择更早日期。记录未修改。")
-            cached = connection.execute("SELECT MAX(date) FROM daily_metrics_cache").fetchone()[0]
-        return max(previous, target, date.today(), date.fromisoformat(cached) if cached else date.today())
+            if target != old_day:
+                validate_fact_change(
+                    connection, target, previous_day=old_day,
+                    weight=weight_id is not None, active_weight_id=weight_id,
+                )
+            # An uncached legacy future fact (even date.max) need not generate
+            # future candles just to correct it. Keep existing valid cache dates.
+            cached = connection.execute(
+                "SELECT MAX(date) FROM daily_metrics_cache WHERE date <= ?", (LAST_CALCULABLE_DAY,),
+            ).fetchone()[0]
+        today = date.today()
+        return max(today, date.fromisoformat(cached)) if cached else today
 
     def _rebuild_record_edit(self, through: date, record: DailyRecordDTO) -> None:
         try:
@@ -561,46 +555,7 @@ class ApplicationContext:
         old = weights.get_measurement(record_id, include_inactive=False)
         if old is None:
             raise LookupError(f"active weight measurement {record_id} does not exist")
-        old_day = date.fromisoformat(old["local_date"])
-        target_day = edit.occurred_at.date() if edit.occurred_at is not None else old_day
-        # Include previously displayed future dates, not just today's dashboard.
-        # Read before committing the fact so a range lookup failure cannot leave
-        # an unreported saved edit. Dirty rows must participate in this boundary.
-        with self.database.connection() as connection:
-            if target_day != old_day:
-                # Calculation uses profile_id=1 and effective-dated revisions,
-                # not the latest revision/current settings. Reject an unsupported
-                # calendar day BEFORE the fact and dirty range can be written.
-                # No active flag exists on profile_revisions in this schema.
-                first_effective = connection.execute(
-                    "SELECT MIN(effective_from) FROM profile_revisions WHERE profile_id = 1"
-                ).fetchone()[0]
-                if first_effective is None:
-                    raise ValueError(
-                        "无法修改称重日期：没有可用的用户资料版本。"
-                        "请先恢复或完善用户资料，再重试；称重记录未修改。"
-                    )
-                earliest_day = date.fromisoformat(first_effective)
-                if target_day < earliest_day:
-                    raise ValueError(
-                        f"无法将称重移到 {target_day.isoformat()}："
-                        f"最早支持的称重日期为 {earliest_day.isoformat()}（首个用户资料生效日）。"
-                        "请选择该日或之后的日期后重试；称重记录未修改。"
-                    )
-                # The daily calculation iterates through the day after its end;
-                # date.max has no successor and cannot be rebuilt safely.
-                if target_day == date.max:
-                    raise ValueError(
-                        "无法将称重移到 9999-12-31：该日期超出每日计算支持范围。"
-                        "请选择更早的实际称重日期后重试；称重记录未修改。"
-                    )
-            cached_through = connection.execute(
-                "SELECT MAX(date) FROM daily_metrics_cache"
-            ).fetchone()[0]
-        through = max(
-            date.today(), old_day, target_day,
-            date.fromisoformat(cached_through) if cached_through else date.today(),
-        )
+        through = self._record_edit_through(old["local_date"], edit.occurred_at, weight_id=record_id)
         changed = weights.update_measurement(
             record_id, weight_kg=edit.weight_kg, occurred_at=edit.occurred_at,
             anchor=edit.anchor, note=edit.note, update_note=edit.note is not None,

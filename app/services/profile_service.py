@@ -15,6 +15,7 @@ from app.db.database import (
     now_iso,
     row_to_dict,
 )
+from app.services.fact_dates import validate_initial_anchor
 
 
 def _gender(value: str) -> str:
@@ -109,6 +110,7 @@ class ProfileService:
         with self.db.transaction() as connection:
             if connection.execute("SELECT 1 FROM profile WHERE id = 1").fetchone():
                 raise ValueError("profile is already initialized")
+            validate_initial_anchor(connection, measured_date, revision_date)
             connection.execute(
                 "INSERT INTO profile(id, gender, birth_date, note, created_at, updated_at) "
                 "VALUES (1, ?, ?, ?, ?, ?)",

@@ -7,6 +7,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.db.database import Database, normalize_date, normalize_datetime, now_iso, row_to_dict
+from app.services.fact_dates import set_fact_active, validate_fact_change
 from app.timestamps import preserve_or_normalize_event_update
 
 
@@ -205,6 +206,7 @@ class ExerciseService:
         occurred_value, local_date = normalize_datetime(occurred_at)
         timestamp = now_iso()
         with self.db.transaction() as connection:
+            validate_fact_change(connection, local_date)
             cursor = connection.execute(
                 """
                 INSERT INTO exercise_events(
@@ -302,6 +304,7 @@ class ExerciseService:
         )):
             return False
         with self.db.transaction() as connection:
+            validate_fact_change(connection, local_date, previous_day=event["local_date"])
             cursor = connection.execute(
                 """
                 UPDATE exercise_events SET occurred_at = ?, local_date = ?,
@@ -326,25 +329,7 @@ class ExerciseService:
         return True
 
     def soft_delete_exercise_event(self, event_id: int) -> None:
-        event = self.get_exercise_event(event_id)
-        if event is None:
-            raise LookupError(f"exercise event {event_id} does not exist")
-        with self.db.transaction() as connection:
-            connection.execute(
-                "UPDATE exercise_events SET active = 0, updated_at = ? WHERE id = ?",
-                (now_iso(), event_id),
-            )
-            self.db.mark_dirty(event["local_date"], connection=connection)
+        set_fact_active(self.db, "exercise_events", event_id, False)
 
     def restore_exercise_event(self, event_id: int) -> None:
-        event = self.get_exercise_event(event_id)
-        if event is None:
-            raise LookupError(f"exercise event {event_id} does not exist")
-        with self.db.transaction() as connection:
-            cursor = connection.execute(
-                "UPDATE exercise_events SET active = 1, updated_at = ? WHERE id = ?",
-                (now_iso(), event_id),
-            )
-            if cursor.rowcount != 1:
-                raise LookupError(f"exercise event {event_id} does not exist")
-            self.db.mark_dirty(event["local_date"], connection=connection)
+        set_fact_active(self.db, "exercise_events", event_id, True)

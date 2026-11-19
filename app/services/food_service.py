@@ -12,6 +12,7 @@ from app.nutrition import (
     FOOD_NUTRIENT_FIELDS, FOOD_PROVENANCE_SQL, NutrientValues, NutritionContribution, food_contribution, optional_nutrient,
     NUTRIENT_NAMES, LEGACY_SNAPSHOT_FIELDS, intake_contribution,
 )
+from app.services.fact_dates import set_fact_active, validate_fact_change
 from app.services.intake_snapshot import save_source_snapshot
 from app.timestamps import preserve_or_normalize_event_update
 
@@ -555,6 +556,7 @@ class FoodService:
         occurred_value, local_date = normalize_datetime(occurred_at)
         timestamp = now_iso()
         with self.db.transaction() as connection:
+            validate_fact_change(connection, local_date)
             cursor = connection.execute(
                 """
                 INSERT INTO intake_events(
@@ -676,6 +678,7 @@ class FoodService:
             return False
         values["updated_at"] = now_iso()
         with self.db.transaction() as connection:
+            validate_fact_change(connection, local_date, previous_day=event["local_date"])
             cursor = connection.execute(
                 f"UPDATE intake_events SET {', '.join(f'{field} = ?' for field in values)} WHERE id = ? AND active = 1",
                 (*values.values(), event_id),
@@ -686,25 +689,7 @@ class FoodService:
         return True
 
     def soft_delete_intake_event(self, event_id: int) -> None:
-        event = self.get_intake_event(event_id)
-        if event is None:
-            raise LookupError(f"intake event {event_id} does not exist")
-        with self.db.transaction() as connection:
-            connection.execute(
-                "UPDATE intake_events SET active = 0, updated_at = ? WHERE id = ?",
-                (now_iso(), event_id),
-            )
-            self.db.mark_dirty(event["local_date"], connection=connection)
+        set_fact_active(self.db, "intake_events", event_id, False)
 
     def restore_intake_event(self, event_id: int) -> None:
-        event = self.get_intake_event(event_id)
-        if event is None:
-            raise LookupError(f"intake event {event_id} does not exist")
-        with self.db.transaction() as connection:
-            cursor = connection.execute(
-                "UPDATE intake_events SET active = 1, updated_at = ? WHERE id = ?",
-                (now_iso(), event_id),
-            )
-            if cursor.rowcount != 1:
-                raise LookupError(f"intake event {event_id} does not exist")
-            self.db.mark_dirty(event["local_date"], connection=connection)
+        set_fact_active(self.db, "intake_events", event_id, True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QDateEdit, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
@@ -54,6 +54,8 @@ class OptionalNutrientEditor(QWidget):
 class DailyNutritionCard(QFrame):
     """Nutrition dates do not alter today's energy cards or weight charts."""
 
+    records_requested = Signal(object)
+
     def __init__(self, context: UIContext) -> None:
         super().__init__()
         self._context = context
@@ -65,15 +67,18 @@ class DailyNutritionCard(QFrame):
         self.date_edit = QDateEdit(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
-        self.date_edit.setAccessibleName("营养汇总日期（仅影响此卡片）")
+        self.date_edit.setAccessibleName("每日营养和当日记录的日期")
         today = QPushButton("今天")
         today.setAccessibleName("查看今天的营养构成")
         today.clicked.connect(self._today)
+        self.records_button = QPushButton("查看当日记录")
+        self.records_button.clicked.connect(lambda: self.records_requested.emit(self.selected_date()))
         header = QHBoxLayout()
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(self.date_edit)
         header.addWidget(today)
+        header.addWidget(self.records_button)
         grid = QGridLayout()
         self.values: dict[str, QLabel] = {}
         for index, (name, caption) in enumerate(zip(NUTRIENT_NAMES, NUTRIENT_CAPTIONS, strict=True)):

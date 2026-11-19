@@ -150,6 +150,7 @@ class DashboardPage(QWidget):
         body_layout.setSpacing(16)
         body_layout.addLayout(metrics)
         self.nutrition_card = DailyNutritionCard(context)
+        self.nutrition_card.records_requested.connect(self.open_daily_timeline)
         body_layout.addWidget(self.nutrition_card)
         body_layout.addWidget(candle_card)
         body_layout.addWidget(treemap_card)

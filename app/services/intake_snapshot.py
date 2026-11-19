@@ -7,6 +7,7 @@ from math import isfinite
 
 from app.db.database import Database, normalize_datetime, now_iso
 from app.nutrition import NUTRIENT_NAMES, NutritionContribution
+from app.services.fact_dates import validate_fact_change
 from app.timestamps import preserve_or_normalize_event_update
 
 
@@ -53,6 +54,7 @@ def save_source_snapshot(
     )
     if old is not None and all(old[field] == value for field, value in values.items()):
         return int(old["id"])
+    validate_fact_change(connection, local_date, previous_day=old["local_date"] if old is not None else None)
     values["updated_at"] = now_iso()
     dirty_date = local_date
     if replace_event_id is None:

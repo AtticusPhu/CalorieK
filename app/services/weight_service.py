@@ -11,8 +11,6 @@ import math
 from datetime import date, datetime
 from typing import Any
 
-from app.timestamps import parse_local_datetime, preserve_or_normalize_event_update
-
 from app.db.database import (
     Database,
     normalize_date,
@@ -20,6 +18,8 @@ from app.db.database import (
     now_iso,
     row_to_dict,
 )
+from app.services.fact_dates import set_fact_active, validate_fact_change
+from app.timestamps import parse_local_datetime, preserve_or_normalize_event_update
 
 
 ANCHORS = frozenset({"AUTO", "OPEN", "CLOSE"})
@@ -80,6 +80,7 @@ class WeightService:
         occurred_value, local_date = normalize_datetime(occurred_at)
         timestamp = now_iso()
         with self.db.transaction() as connection:
+            validate_fact_change(connection, local_date, weight=True)
             cursor = connection.execute(
                 """
                 INSERT INTO weight_measurements(
@@ -253,6 +254,9 @@ class WeightService:
             return False
 
         with self.db.transaction() as connection:
+            validate_fact_change(
+                connection, local_date, previous_day=current["local_date"], weight=True, active_weight_id=measurement_id,
+            )
             cursor = connection.execute(
                 """
                 UPDATE weight_measurements
@@ -281,17 +285,7 @@ class WeightService:
     update_weight_measurement = update_measurement
 
     def soft_delete_measurement(self, measurement_id: int) -> None:
-        current = self.get_measurement(measurement_id)
-        if current is None:
-            raise LookupError(f"weight measurement {measurement_id} does not exist")
-        with self.db.transaction() as connection:
-            cursor = connection.execute(
-                "UPDATE weight_measurements SET active = 0, updated_at = ? WHERE id = ?",
-                (now_iso(), measurement_id),
-            )
-            if cursor.rowcount != 1:
-                raise LookupError(f"weight measurement {measurement_id} does not exist")
-            self.db.mark_dirty(str(current["local_date"]), connection=connection)
+        set_fact_active(self.db, "weight_measurements", measurement_id, False)
 
     delete_weight = soft_delete_measurement
     delete_measurement = soft_delete_measurement
@@ -299,17 +293,7 @@ class WeightService:
     soft_delete_weight_measurement = soft_delete_measurement
 
     def restore_measurement(self, measurement_id: int) -> None:
-        current = self.get_measurement(measurement_id)
-        if current is None:
-            raise LookupError(f"weight measurement {measurement_id} does not exist")
-        with self.db.transaction() as connection:
-            cursor = connection.execute(
-                "UPDATE weight_measurements SET active = 1, updated_at = ? WHERE id = ?",
-                (now_iso(), measurement_id),
-            )
-            if cursor.rowcount != 1:
-                raise LookupError(f"weight measurement {measurement_id} does not exist")
-            self.db.mark_dirty(str(current["local_date"]), connection=connection)
+        set_fact_active(self.db, "weight_measurements", measurement_id, True)
 
     restore_weight = restore_measurement
     restore_weight_measurement = restore_measurement
