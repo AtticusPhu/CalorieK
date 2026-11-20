@@ -21,6 +21,7 @@ from app.nutrition import DailyNutrition, NutritionContribution
 ColorMode = Literal["china", "international"]
 TreemapColorMode = Literal["intake_red", "intake_green"]
 AnchorMode = Literal["AUTO", "OPEN", "CLOSE"]
+DailyRecordKind = Literal["intake", "exercise", "weight"]
 IntakeSection = Literal["recent", "favorites", "recipes", "search"]
 ExerciseSection = Literal["recent", "favorites", "all"]
 FoodBasisUnit = Literal["g", "ml"]
@@ -134,7 +135,7 @@ class IntakeDraft:
 
 @dataclass(frozen=True, slots=True)
 class DailyRecordDTO:
-    kind: Literal["intake", "exercise", "weight"]
+    kind: DailyRecordKind
     record_id: int
     occurred_at: datetime
     name: str
@@ -149,6 +150,7 @@ class DailyRecordDTO:
     intake_source_type: Literal["FOOD", "RECIPE", "CUSTOM"] | None = None
     intake_source_id: int | None = None
     intake_nutrition: NutritionContribution = field(default_factory=NutritionContribution)
+    active: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,13 +381,17 @@ class SettingsDraft:
 class UIContext(Protocol):
     """Application-facing operations required by the Qt presentation layer.
 
-    A PostCommitRecalculationError from entry, initial setup or settings means
+    A PostCommitRecalculationError from entry, delete/restore, initial setup or settings means
     the save completed. Retry through get_dashboard() without resubmitting it.
     """
 
     def get_daily_nutrition(self, day: date) -> DailyNutrition: ...
 
-    def get_daily_records(self, day: date) -> Sequence[DailyRecordDTO]: ...
+    def get_daily_records(self, day: date, *, include_inactive: bool = False) -> Sequence[DailyRecordDTO]: ...
+
+    def set_daily_record_active(self, kind: DailyRecordKind, record_id: int, *, active: bool) -> bool:
+        """Return whether the stored state changed. A post-commit error is safe to retry via refresh."""
+        ...
 
     def update_intake(self, record_id: int, edit: IntakeEditDraft) -> bool: ...
 
@@ -473,6 +479,7 @@ __all__ = [
     "ColorMode",
     "DashboardDTO",
     "DailyRecordDTO",
+    "DailyRecordKind",
     "IntakeEditDraft",
     "IntakeSnapshotEdit",
     "CustomIntakeEdit",

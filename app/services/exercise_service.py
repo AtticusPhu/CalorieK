@@ -328,8 +328,8 @@ class ExerciseService:
             self.db.mark_dirty(min(event["local_date"], local_date), connection=connection)
         return True
 
-    def soft_delete_exercise_event(self, event_id: int) -> None:
-        set_fact_active(self.db, "exercise_events", event_id, False)
+    def soft_delete_exercise_event(self, event_id: int) -> bool:
+        return set_fact_active(self.db, "exercise_events", event_id, False)
 
-    def restore_exercise_event(self, event_id: int) -> None:
-        set_fact_active(self.db, "exercise_events", event_id, True)
+    def restore_exercise_event(self, event_id: int) -> bool:
+        return set_fact_active(self.db, "exercise_events", event_id, True)

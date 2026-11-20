@@ -197,8 +197,7 @@ class DashboardPage(QWidget):
         from .daily_timeline import DailyTimelineDialog
 
         dialog = DailyTimelineDialog(self._context, day, self)
-        dialog.data_changed.connect(self.refresh)
-        dialog.data_changed.connect(self.data_changed.emit)
+        dialog.data_changed.connect(self._after_record_change)
         dialog.exec()
 
     def refresh(self) -> None:
@@ -335,13 +334,17 @@ class DashboardPage(QWidget):
             return f"今天 {measured_at:%H:%M}"
         return measured_at.strftime("%Y-%m-%d %H:%M")
 
+    def _after_record_change(self, recalculation_pending: bool) -> None:
+        if recalculation_pending:
+            self.as_of_label.setText("记录已保存，点击“刷新”重算图表")
+            self.nutrition_card.refresh()
+        else:
+            self.refresh()
+        self.data_changed.emit()
+
     def _run_entry_dialog(self, dialog: FoodDialog | ExerciseDialog | WeightDialog) -> None:
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            if dialog.recalculation_pending:
-                self.as_of_label.setText("记录已保存，点击“刷新”重算图表")
-            else:
-                self.refresh()
-            self.data_changed.emit()
+            self._after_record_change(dialog.recalculation_pending)
 
     def open_food_dialog(self) -> None:
         self._run_entry_dialog(FoodDialog(self._context, self))

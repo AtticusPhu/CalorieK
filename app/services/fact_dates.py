@@ -93,8 +93,8 @@ def validate_fact_change(
     _check_dependents(connection, previous_day if first_after is not None else date.min.isoformat(), first_after)
 
 
-def set_fact_active(database: Database, table: str, fact_id: int, active: bool) -> None:
-    """Toggle only the active flag and audit time, and atomically invalidate its day."""
+def set_fact_active(database: Database, table: str, fact_id: int, active: bool) -> bool:
+    """Return whether the flag changed and its day was invalidated in the same commit."""
     if table not in ("weight_measurements", "intake_events", "exercise_events"):
         raise ValueError(f"unknown fact table: {table}")
     with database.transaction() as connection:
@@ -102,7 +102,7 @@ def set_fact_active(database: Database, table: str, fact_id: int, active: bool) 
         if row is None:
             raise LookupError(f"{table} record {fact_id} does not exist")
         if bool(row["active"]) == active:
-            return
+            return False
         day = row["local_date"]
         weight = table == "weight_measurements"
         validate_fact_change(
@@ -111,3 +111,4 @@ def set_fact_active(database: Database, table: str, fact_id: int, active: bool) 
         )
         connection.execute(f"UPDATE {table} SET active = ?, updated_at = ? WHERE id = ?", (active, now_iso(), fact_id))
         database.mark_dirty(day, connection=connection)
+    return True

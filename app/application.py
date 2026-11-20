@@ -30,6 +30,7 @@ from app.ui.context import (
     CandleDTO,
     DashboardDTO,
     DailyRecordDTO,
+    DailyRecordKind,
     IntakeEditDraft,
     RecordRecalculationError,
     ExerciseEditDraft,
@@ -338,13 +339,13 @@ class ApplicationContext:
                 note=event.note,
             )
 
-    def _record_edit_through(
-        self, old_day: str, occurred_at: datetime | None, *, weight_id: int | None = None,
+    def _record_change_through(
+        self, old_day: str | None = None, occurred_at: datetime | None = None, *, weight_id: int | None = None,
     ) -> date:
-        """Preflight a move and retain the range of already materialized charts."""
-        target = parse_local_datetime(occurred_at).date().isoformat() if occurred_at is not None else old_day
+        """Capture the chart range before a write and preflight an edit that moves a fact."""
+        target = parse_local_datetime(occurred_at).date().isoformat() if occurred_at is not None else None
         with self.database.connection() as connection:
-            if target != old_day:
+            if target is not None and target != old_day:
                 validate_fact_change(
                     connection, target, previous_day=old_day,
                     weight=weight_id is not None, active_weight_id=weight_id,
@@ -373,7 +374,7 @@ class ApplicationContext:
             raise LookupError(f"active intake event {record_id} does not exist")
         if old["source_type"] == "CUSTOM" and edit.replacement is not None:
             raise ValueError("CUSTOM 记录只能修正其自身字段，不能改为食品或食谱来源")
-        through = self._record_edit_through(old["local_date"], edit.occurred_at)
+        through = self._record_change_through(old["local_date"], edit.occurred_at)
         # UI displays SQL NULL as empty text; an untouched empty note must not
         # turn a legacy NULL into a write. Nonempty -> empty still clears it.
         note = None if old["note"] is None and edit.note == "" else edit.note
@@ -399,7 +400,7 @@ class ApplicationContext:
         old = self.exercises.get_exercise_event(record_id, include_inactive=False)
         if old is None:
             raise LookupError(f"active exercise event {record_id} does not exist")
-        through = self._record_edit_through(old["local_date"], edit.occurred_at)
+        through = self._record_change_through(old["local_date"], edit.occurred_at)
         note = None if old["note"] is None and edit.note == "" else edit.note
         changed = self.exercises.update_exercise_event(
             record_id, exercise_type_id=edit.replacement_type_id, occurred_at=edit.occurred_at,
@@ -416,7 +417,7 @@ class ApplicationContext:
             row["name_snapshot"], note=row["note"] or "", amount=float(row["amount"]),
             unit=row["unit"], meal_type=row["meal_type"], energy_kj=float(row["kj_snapshot"]),
             intake_source_type=row["source_type"], intake_source_id=row["source_id"],
-            intake_nutrition=intake_contribution(row),
+            intake_nutrition=intake_contribution(row), active=bool(row["active"]),
         )
 
     @staticmethod
@@ -424,27 +425,45 @@ class ApplicationContext:
         return DailyRecordDTO(
             "exercise", int(row["id"]), parse_datetime(row["occurred_at"]),
             row["name_snapshot"], note=row["note"] or "", duration_min=float(row["duration_min"]),
-            energy_kj=float(row["active_kj"]), exercise_type_id=row["exercise_type_id"],
+            energy_kj=float(row["active_kj"]), exercise_type_id=row["exercise_type_id"], active=bool(row["active"]),
         )
 
-    def get_daily_records(self, day: date) -> Sequence[DailyRecordDTO]:
+    def get_daily_records(self, day: date, *, include_inactive: bool = False) -> Sequence[DailyRecordDTO]:
         from app.services.weight_service import WeightService
 
         records = []
-        for row in self.foods.list_intake_events(local_date=day):
+        for row in self.foods.list_intake_events(local_date=day, include_inactive=include_inactive):
             records.append(self._intake_record(row))
-        for row in self.exercises.list_exercise_events(local_date=day):
+        for row in self.exercises.list_exercise_events(local_date=day, include_inactive=include_inactive):
             records.append(self._exercise_record(row))
-        for row in WeightService(self.database).list_measurements(local_date=day):
+        for row in WeightService(self.database).list_measurements(local_date=day, include_inactive=include_inactive):
             records.append(DailyRecordDTO(
                 "weight", int(row["id"]), parse_datetime(row["occurred_at"]),
                 "体重", note=row["note"] or "", amount=float(row["weight_kg"]), unit="kg",
-                weight_anchor=row["anchor"],
+                weight_anchor=row["anchor"], active=bool(row["active"]),
             ))
         # Match existing local-calendar calculations; retain original offsets in DTOs.
         return tuple(sorted(records, key=lambda item: (
             parse_local_datetime(item.occurred_at), item.kind, item.record_id,
         )))
+
+    def set_daily_record_active(self, kind: DailyRecordKind, record_id: int, *, active: bool) -> bool:
+        if kind == "intake":
+            change = self.foods.restore_intake_event if active else self.foods.soft_delete_intake_event
+        elif kind == "exercise":
+            change = self.exercises.restore_exercise_event if active else self.exercises.soft_delete_exercise_event
+        elif kind == "weight":
+            from app.services.weight_service import WeightService
+
+            weights = WeightService(self.database)
+            change = weights.restore_measurement if active else weights.soft_delete_measurement
+        else:
+            raise ValueError(f"unknown daily record kind: {kind}")
+        through = self._record_change_through()
+        changed = change(record_id)
+        if changed:
+            self._recalculate_after_save(through)
+        return changed
 
     def list_exercise_types(
         self, section: ExerciseSection
@@ -555,7 +574,7 @@ class ApplicationContext:
         old = weights.get_measurement(record_id, include_inactive=False)
         if old is None:
             raise LookupError(f"active weight measurement {record_id} does not exist")
-        through = self._record_edit_through(old["local_date"], edit.occurred_at, weight_id=record_id)
+        through = self._record_change_through(old["local_date"], edit.occurred_at, weight_id=record_id)
         changed = weights.update_measurement(
             record_id, weight_kg=edit.weight_kg, occurred_at=edit.occurred_at,
             anchor=edit.anchor, note=edit.note, update_note=edit.note is not None,

@@ -284,16 +284,16 @@ class WeightService:
     update_weight = update_measurement
     update_weight_measurement = update_measurement
 
-    def soft_delete_measurement(self, measurement_id: int) -> None:
-        set_fact_active(self.db, "weight_measurements", measurement_id, False)
+    def soft_delete_measurement(self, measurement_id: int) -> bool:
+        return set_fact_active(self.db, "weight_measurements", measurement_id, False)
 
     delete_weight = soft_delete_measurement
     delete_measurement = soft_delete_measurement
     soft_delete_weight = soft_delete_measurement
     soft_delete_weight_measurement = soft_delete_measurement
 
-    def restore_measurement(self, measurement_id: int) -> None:
-        set_fact_active(self.db, "weight_measurements", measurement_id, True)
+    def restore_measurement(self, measurement_id: int) -> bool:
+        return set_fact_active(self.db, "weight_measurements", measurement_id, True)
 
     restore_weight = restore_measurement
     restore_weight_measurement = restore_measurement
